@@ -2360,6 +2360,12 @@ bool DisconnectBlock(const CBlock& block, CValidationState& state, const CBlockI
         }
     }
 
+    if (fSpentIndex) {
+        if (!pblocktree->UpdateSpentIndex(spentIndex)) {
+            return AbortNode(state, "Failed to write transaction index");
+        }
+    }
+
     return fClean;
 }
 
