@@ -4370,12 +4370,14 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, FlatFi
             nRewind++; // start one byte further next time, in case of failure
             blkdat.SetLimit(); // remove former limit
             unsigned int nSize = 0;
+            unsigned char rewindbyte=0;
             try {
                 // locate a header
                 unsigned char buf[CMessageHeader::MESSAGE_START_SIZE];
                 blkdat.FindByte(chainparams.MessageStart()[0]);
                 nRewind = blkdat.GetPos()+1;
                 blkdat >> buf;
+                rewindbyte = buf[1]; // rewind should position us to this byte
                 if (memcmp(buf, chainparams.MessageStart(), CMessageHeader::MESSAGE_START_SIZE))
                     continue;
                 // read size
@@ -4396,6 +4398,16 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, FlatFi
                 std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
                 CBlock& block = *pblock;
                 blkdat >> block;
+                {
+                    // verify that we can rewind to where we *may* need to
+                    uint64_t savepos = blkdat.GetPos();
+                    LogPrint(BCLog::REINDEX, "rewinding from %lu to %lu\n", savepos, nRewind);
+                    assert(blkdat.SetPos(nRewind));
+                    unsigned char testbyte;
+                    blkdat >> testbyte;
+                    assert(testbyte == rewindbyte);
+                    assert(blkdat.SetPos(savepos));
+                }
                 nRewind = blkdat.GetPos();
 
                 uint256 hash = block.GetHash();
