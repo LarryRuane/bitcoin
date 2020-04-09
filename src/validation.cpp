@@ -4670,31 +4670,43 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, FlatFi
                     continue;
             } catch (const std::exception&) {
                 // no valid block header found; don't complain
+                // (this happens at the end of every blk.dat file)
                 break;
             }
             try {
-                // read block
+                // read block header
                 uint64_t nBlockPos = blkdat.GetPos();
                 if (dbp)
                     dbp->nPos = nBlockPos;
                 blkdat.SetLimit(nBlockPos + nSize);
-                blkdat.SetPos(nBlockPos);
-                std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
-                CBlock& block = *pblock;
-                blkdat >> block;
-                nRewind = blkdat.GetPos();
+                CBlockHeader header;
+                blkdat >> header;
 
-                uint256 hash = block.GetHash();
+                // Read the rest of the block (from the end of its header to the end
+                // of the block) to ensure it's in memory while holding cs_main (below).
+                blkdat.Skip(nBlockPos + nSize - blkdat.GetPos());
+
+                const uint256 hash = header.GetHash();
                 {
                     LOCK(cs_main);
-                    // detect out of order blocks, and store them for later
-                    if (hash != chainparams.GetConsensus().hashGenesisBlock && !LookupBlockIndex(block.hashPrevBlock)) {
+                    // Store positions of out of order blocks for later.
+                    if (hash != chainparams.GetConsensus().hashGenesisBlock && !LookupBlockIndex(header.hashPrevBlock)) {
                         LogPrint(BCLog::REINDEX, "%s: Out of order block %s, parent %s not known\n", __func__, hash.ToString(),
-                                block.hashPrevBlock.ToString());
+                                header.hashPrevBlock.ToString());
                         if (dbp)
-                            mapBlocksUnknownParent.insert(std::make_pair(block.hashPrevBlock, *dbp));
+                            mapBlocksUnknownParent.insert(std::make_pair(header.hashPrevBlock, *dbp));
+
+                        // Skip the rest of this block; position to the marker before the next block.
+                        nRewind = nBlockPos + nSize;
                         continue;
                     }
+
+                    // This block can be processed immediately; rewind to its start then read it.
+                    blkdat.SetPos(nBlockPos);
+                    std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
+                    CBlock& block = *pblock;
+                    blkdat >> block;
+                    nRewind = blkdat.GetPos();
 
                     // process in case the block isn't known yet
                     CBlockIndex* pindex = LookupBlockIndex(hash);
