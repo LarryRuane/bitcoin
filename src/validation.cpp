@@ -4644,12 +4644,55 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, FlatFi
     static std::multimap<uint256, FlatFilePos> mapBlocksUnknownParent;
     int64_t nStart = GetTimeMillis();
 
+    std::deque<uint256> queue;
+    std::condition_variable cv_queue;
+    std::mutex pcMutex;
+    bool stop = false;
     int nLoaded = 0;
+    int nDelayed = 0;
+
+    std::thread processChildren([&]() {
+        std::unique_lock<std::mutex> lk(pcMutex);
+        while (!ShutdownRequested()) {
+            cv_queue.wait(lk, [&queue, &stop]{return stop || !queue.empty();});
+            if (queue.empty()) {
+                if (stop) break;
+                continue;
+            }
+            uint256 head = queue.front();
+            std::multimap<uint256, FlatFilePos>::iterator it = mapBlocksUnknownParent.find(head);
+            if (it == mapBlocksUnknownParent.end()) {
+                queue.pop_front();
+                continue;
+            }
+            FlatFilePos pos = it->second;
+            mapBlocksUnknownParent.erase(it);
+            lk.unlock();
+            std::shared_ptr<CBlock> pblockrecursive = std::make_shared<CBlock>();
+            if (ReadBlockFromDisk(*pblockrecursive, pos, Params().GetConsensus()))
+            {
+                LogPrint(BCLog::REINDEX, "%s: Processing out of order child %s of %s queue %d\n", __func__, pblockrecursive->GetHash().ToString(),
+                        head.ToString(), queue.size());
+                LOCK(cs_main);
+                BlockValidationState dummy;
+                if (::ChainstateActive().AcceptBlock(pblockrecursive, dummy, Params(), nullptr, true, &pos, nullptr))
+                {
+                    nDelayed++;
+                    lk.lock();
+                    queue.push_back(pblockrecursive->GetHash());
+                    lk.unlock();
+                }
+            }
+            NotifyHeaderTip();
+            lk.lock();
+        }
+    });
+
     try {
         // This takes over fileIn and calls fclose() on it in the CBufferedFile destructor
         CBufferedFile blkdat(fileIn, 2*MAX_BLOCK_SERIALIZED_SIZE, MAX_BLOCK_SERIALIZED_SIZE+8, SER_DISK, CLIENT_VERSION);
         uint64_t nRewind = blkdat.GetPos();
-        while (!blkdat.eof()) {
+        while (!blkdat.eof() && !ShutdownRequested()) {
             boost::this_thread::interruption_point();
 
             blkdat.SetPos(nRewind);
@@ -4693,8 +4736,10 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, FlatFi
                     if (hash != chainparams.GetConsensus().hashGenesisBlock && !LookupBlockIndex(header.hashPrevBlock)) {
                         LogPrint(BCLog::REINDEX, "%s: Out of order block %s, parent %s not known\n", __func__, hash.ToString(),
                                 header.hashPrevBlock.ToString());
-                        if (dbp)
+                        if (dbp) {
+                            std::lock_guard<std::mutex> lk(pcMutex);
                             mapBlocksUnknownParent.insert(std::make_pair(header.hashPrevBlock, *dbp));
+                        }
 
                         // Skip the rest of this block; position to the marker before the next block.
                         nRewind = nBlockPos + nSize;
@@ -4734,32 +4779,11 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, FlatFi
                 NotifyHeaderTip();
 
                 // Recursively process earlier encountered successors of this block
-                std::deque<uint256> queue;
-                queue.push_back(hash);
-                while (!queue.empty()) {
-                    uint256 head = queue.front();
-                    queue.pop_front();
-                    std::pair<std::multimap<uint256, FlatFilePos>::iterator, std::multimap<uint256, FlatFilePos>::iterator> range = mapBlocksUnknownParent.equal_range(head);
-                    while (range.first != range.second) {
-                        std::multimap<uint256, FlatFilePos>::iterator it = range.first;
-                        std::shared_ptr<CBlock> pblockrecursive = std::make_shared<CBlock>();
-                        if (ReadBlockFromDisk(*pblockrecursive, it->second, chainparams.GetConsensus()))
-                        {
-                            LogPrint(BCLog::REINDEX, "%s: Processing out of order child %s of %s\n", __func__, pblockrecursive->GetHash().ToString(),
-                                    head.ToString());
-                            LOCK(cs_main);
-                            BlockValidationState dummy;
-                            if (::ChainstateActive().AcceptBlock(pblockrecursive, dummy, chainparams, nullptr, true, &it->second, nullptr))
-                            {
-                                nLoaded++;
-                                queue.push_back(pblockrecursive->GetHash());
-                            }
-                        }
-                        range.first++;
-                        mapBlocksUnknownParent.erase(it);
-                        NotifyHeaderTip();
-                    }
+                {
+                    std::lock_guard<std::mutex> lk(pcMutex);
+                    queue.push_back(hash);
                 }
+                cv_queue.notify_one();
             } catch (const std::exception& e) {
                 LogPrintf("%s: Deserialize or I/O error - %s\n", __func__, e.what());
             }
@@ -4767,7 +4791,14 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, FlatFi
     } catch (const std::runtime_error& e) {
         AbortNode(std::string("System error: ") + e.what());
     }
-    if (nLoaded > 0)
+    {
+        std::lock_guard<std::mutex> lk(pcMutex);
+        stop = true;
+    }
+    cv_queue.notify_one();
+    processChildren.join();
+    nLoaded += nDelayed;
+    if (nLoaded > 0 && !ShutdownRequested())
         LogPrintf("Loaded %i blocks from external file in %dms\n", nLoaded, GetTimeMillis() - nStart);
     return nLoaded > 0;
 }

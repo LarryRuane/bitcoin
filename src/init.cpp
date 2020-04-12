@@ -688,6 +688,8 @@ static void ThreadImport(std::vector<fs::path> vImportFiles)
             LogPrintf("Reindexing block file blk%05u.dat...\n", (unsigned int)nFile);
             LoadExternalBlockFile(chainparams, file, &pos);
             nFile++;
+            if (ShutdownRequested())
+                return;
         }
         pblocktree->WriteReindexing(false);
         fReindex = false;
