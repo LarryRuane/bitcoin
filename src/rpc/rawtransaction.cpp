@@ -935,7 +935,8 @@ static UniValue testmempoolaccept(const JSONRPCRequest& request)
         test_accept_res = AcceptToMemoryPool(mempool, state, std::move(tx),
             nullptr /* plTxnReplaced */, false /* bypass_limits */, max_raw_tx_fee, /* test_accept */ true, &fee);
     }
-    result_0.pushKV("allowed", test_accept_res);
+    bool allowed = test_accept_res;
+    std::string reject_reason;
 
     // Only return the fee and vsize if the transaction would pass ATMP.
     // These can be used to calculate the feerate.
@@ -944,17 +945,23 @@ static UniValue testmempoolaccept(const JSONRPCRequest& request)
         UniValue fees(UniValue::VOBJ);
         fees.pushKV("base", ValueFromAmount(fee));
         result_0.pushKV("fees", fees);
+        if (fee > max_raw_tx_fee) {
+            allowed = false;
+            reject_reason = "max-fee-exceeded";
+        }
     } else {
         if (state.IsInvalid()) {
             if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS) {
-                result_0.pushKV("reject-reason", "missing-inputs");
+                reject_reason = "missing-inputs";
             } else {
-                result_0.pushKV("reject-reason", strprintf("%s", state.GetRejectReason()));
+                reject_reason = state.GetRejectReason();
             }
         } else {
-            result_0.pushKV("reject-reason", state.GetRejectReason());
+            reject_reason = state.GetRejectReason();
         }
     }
+    result_0.pushKV("allowed", allowed);
+    if (!reject_reason.empty()) result_0.pushKV("reject-reason", reject_reason);
 
     result.push_back(std::move(result_0));
     return result;

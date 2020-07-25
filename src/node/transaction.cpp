@@ -36,10 +36,18 @@ TransactionError BroadcastTransaction(NodeContext& node, const CTransactionRef t
         if (!existingCoin.IsSpent()) return TransactionError::ALREADY_IN_CHAIN;
     }
     if (!node.mempool->exists(hashTx)) {
-        // Transaction is not already in the mempool. Submit it.
+        // Transaction is not already in the mempool.
         TxValidationState state;
+        CAmount fee{0};
+        if (AcceptToMemoryPool(*node.mempool, state, tx,
+                nullptr /* plTxnReplaced */, false /* bypass_limits */, /* absurdfee*/ 0, /* test_accept */ true, &fee)) {
+            if (max_tx_fee && fee > max_tx_fee) {
+                return TransactionError::MAX_FEE_EXCEEDED;
+            }
+        }
+        // Transaction fee is acceptable. Submit the transaction.
         if (!AcceptToMemoryPool(*node.mempool, state, tx,
-                                nullptr /* plTxnReplaced */, false /* bypass_limits */, max_tx_fee)) {
+                nullptr /* plTxnReplaced */, false /* bypass_limits */, max_tx_fee)) {
             err_string = state.ToString();
             if (state.IsInvalid()) {
                 if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS) {
