@@ -1090,6 +1090,33 @@ bool AcceptToMemoryPool(CTxMemPool& pool, TxValidationState &state, const CTrans
     return AcceptToMemoryPoolWithTime(chainparams, pool, state, tx, GetTime(), plTxnReplaced, bypass_limits, test_accept, fee_out);
 }
 
+// Calculate the fee of a transaction by looking up inputs from the mempool if
+// necessary. Return true if the fee was successfully calculated, or false if
+// an error with the transaction was discovered.
+// If the transaction is valid, then the fee returned is correct.
+// However, success does not imply that the transaction is valid.
+bool GetTransactionFee(CTxMemPool& pool, TxValidationState &state, const CTransactionRef &tx, CAmount *fee_out)
+{
+    LOCK2(cs_main, pool.cs);
+
+    CCoinsViewMemPool viewmempool(&::ChainstateActive().CoinsTip(), pool);
+    CCoinsViewCache view(&viewmempool);
+    view.GetBestBlock();
+
+    *fee_out = 0;
+
+    // Fees don't make sense for coinbase transactions
+    if (tx->IsCoinBase()) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, "coinbase");
+    }
+    // Re-use the fee calculation in CheckTxInputs, which also validates that
+    // the fee calculation is correct (i.e. that we don't overflow)
+    if (!Consensus::CheckTxInputs(*tx, state, view, GetSpendHeight(view), *fee_out)) {
+        return false; // state filled in by CheckTxInputs
+    }
+    return true;
+}
+
 CTransactionRef GetTransaction(const CBlockIndex* const block_index, const CTxMemPool* const mempool, const uint256& hash, const Consensus::Params& consensusParams, uint256& hashBlock)
 {
     LOCK(cs_main);

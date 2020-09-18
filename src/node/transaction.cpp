@@ -39,9 +39,19 @@ TransactionError BroadcastTransaction(NodeContext& node, const CTransactionRef t
         // Transaction is not already in the mempool.
         TxValidationState state;
         CAmount fee{0};
-        if (AcceptToMemoryPool(*node.mempool, state, tx,
-                nullptr /* plTxnReplaced */, false /* bypass_limits */, /* test_accept */ true, &fee)) {
-            if (max_tx_fee && fee > max_tx_fee) {
+        if (max_tx_fee) {
+            if (!GetTransactionFee(*node.mempool, state, tx, &fee)) {
+                err_string = state.ToString();
+                if (state.IsInvalid()) {
+                    if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS) {
+                        return TransactionError::MISSING_INPUTS;
+                    }
+                    return TransactionError::MEMPOOL_REJECTED;
+                } else {
+                    return TransactionError::MEMPOOL_ERROR;
+                }
+            }
+            else if (fee > max_tx_fee) {
                 return TransactionError::MAX_FEE_EXCEEDED;
             }
         }
