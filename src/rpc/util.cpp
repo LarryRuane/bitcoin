@@ -434,7 +434,13 @@ struct Sections {
 };
 
 RPCHelpMan::RPCHelpMan(std::string name, std::string description, std::vector<RPCArg> args, RPCResults results, RPCExamples examples)
-    : RPCHelpMan{std::move(name), std::move(description), std::move(args), std::move(results), std::move(examples), nullptr} {}
+    : RPCHelpMan{std::move(name), std::move(description), std::move(args), std::move(results), std::move(examples), RPCMethodImpl{}} {}
+
+RPCHelpMan::RPCHelpMan(std::string name, std::string description, std::vector<RPCArg> args, RPCResults results, RPCExamples examples, RPCLegacyMethodImpl fun)
+    : RPCHelpMan(std::move(name), std::move(description), std::move(args), std::move(results), std::move(examples), [fun](const RPCContext& ctx) -> UniValue {
+        return fun(ctx.m_helpman, ctx.m_request);
+    })
+{}
 
 RPCHelpMan::RPCHelpMan(std::string name, std::string description, std::vector<RPCArg> args, RPCResults results, RPCExamples examples, RPCMethodImpl fun)
     : m_name{std::move(name)},
@@ -475,6 +481,15 @@ std::string RPCExamples::ToDescriptionString() const
 {
     return m_examples.empty() ? m_examples : "\nExamples:\n" + m_examples;
 }
+
+template <> RPCDefaultParam<bool>::operator bool() const { return value.isNull() ? defaults : value.get_bool(); }
+template <> RPCDefaultParam<int>::operator int() const { return value.isNull() ? defaults : value.get_int(); }
+template <> RPCDefaultParam<std::string>::operator std::string() const { return value.isNull() ? defaults : value.get_str(); }
+template <> RPCParam<UniValue>::operator UniValue() const { return value; }
+template <> RPCParam<bool>::operator bool() const { return value.get_bool(); }
+template <> RPCParam<int>::operator int() const { return value.get_int(); }
+template <> RPCParam<std::string>::operator std::string() const { return value.get_str(); }
+template <> RPCParam<uint256>::operator uint256() const { return ParseHashV(value, arg.GetName()); }
 
 bool RPCHelpMan::IsValidNumArgs(size_t num_args) const
 {
@@ -547,6 +562,15 @@ std::string RPCHelpMan::ToString() const
     ret += m_examples.ToDescriptionString();
 
     return ret;
+}
+
+UniValue RPCHelpMan::HandleRequest(const JSONRPCRequest& request)
+{
+    Check(request);
+    RPCContext ctx(*this, request);
+    // TODO: on ctx destructor check if all parameters were used,
+    // maybe enabled with -rpcstrict=true, and enabled in test framework
+    return m_fun(ctx);
 }
 
 std::string RPCArg::GetFirstName() const

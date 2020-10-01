@@ -329,19 +329,52 @@ struct RPCExamples {
     std::string ToDescriptionString() const;
 };
 
+template <typename T>
+struct RPCDefaultParam
+{
+    const RPCArg& arg;
+    const UniValue& value;
+    T defaults;
+    operator T() const;
+};
+
+template <typename T>
+struct RPCParam
+{
+    const RPCArg& arg;
+    const UniValue& value;
+    RPCDefaultParam<T> defaults(const T& defaults) const { return {arg, value, defaults}; }
+    operator T() const;
+    bool isNull() const { return value.isNull(); }
+    bool isNum() const { return value.isNum(); }
+    template <typename F>
+    void forEach(F fn) const {
+        if (value.isNull()) return;
+        for (const UniValue& elem : value.get_array().getValues()) {
+            fn(elem);
+        }
+    }
+};
+
+template <> RPCDefaultParam<int>::operator int() const;
+template <> RPCParam<bool>::operator bool() const;
+template <> RPCParam<int>::operator int() const;
+template <> RPCParam<std::string>::operator std::string() const;
+template <> RPCParam<uint256>::operator uint256() const;
+
+class RPCContext;
 class RPCHelpMan
 {
 public:
     RPCHelpMan(std::string name, std::string description, std::vector<RPCArg> args, RPCResults results, RPCExamples examples);
-    using RPCMethodImpl = std::function<UniValue(const RPCHelpMan&, const JSONRPCRequest&)>;
+    using RPCMethodImpl = std::function<UniValue(const RPCContext&)>;
+    using RPCLegacyMethodImpl = std::function<UniValue(const RPCHelpMan&, const JSONRPCRequest&)>;
     RPCHelpMan(std::string name, std::string description, std::vector<RPCArg> args, RPCResults results, RPCExamples examples, RPCMethodImpl fun);
+    RPCHelpMan(std::string name, std::string description, std::vector<RPCArg> args, RPCResults results, RPCExamples examples, RPCLegacyMethodImpl fun);
+
 
     std::string ToString() const;
-    UniValue HandleRequest(const JSONRPCRequest& request)
-    {
-        Check(request);
-        return m_fun(*this, request);
-    }
+    UniValue HandleRequest(const JSONRPCRequest& request);
     /** If the supplied number of args is neither too small nor too high */
     bool IsValidNumArgs(size_t num_args) const;
     /**
@@ -364,6 +397,24 @@ private:
     const std::vector<RPCArg> m_args;
     const RPCResults m_results;
     const RPCExamples m_examples;
+    friend class RPCContext;
+};
+
+class RPCContext
+{
+public:
+    const RPCHelpMan& m_helpman;
+    const JSONRPCRequest& m_request;
+    RPCContext(const RPCHelpMan& helpman, const JSONRPCRequest& request)
+        : m_helpman(helpman), m_request(request) {}
+
+    template <typename T=UniValue>
+    RPCParam<T> param(size_t index) const { return {m_helpman.m_args[index], m_request.params[index]}; }
+    template <typename F>
+    auto param(size_t index, F fn) const -> decltype(fn(UniValue{}))
+    {
+        return fn(m_request.params[index]);
+    }
 };
 
 #endif // BITCOIN_RPC_UTIL_H
