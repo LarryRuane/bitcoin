@@ -2273,7 +2273,7 @@ static RPCHelpMan getblockfilter()
         [](const RPCContext& ctx) -> UniValue
 {
     uint256 block_hash = ctx.param<uint256>(0);
-    std::string filtertype_name = ctx.param<std::string>(1).defaults("basic");
+    std::string filtertype_name = ctx.param<std::string>(1);
 
     BlockFilterType filtertype;
     if (!BlockFilterTypeByName(filtertype_name, filtertype)) {

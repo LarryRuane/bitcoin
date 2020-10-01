@@ -488,7 +488,12 @@ template <> RPCDefaultParam<std::string>::operator std::string() const { return 
 template <> RPCParam<UniValue>::operator UniValue() const { return value; }
 template <> RPCParam<bool>::operator bool() const { return value.get_bool(); }
 template <> RPCParam<int>::operator int() const { return value.get_int(); }
-template <> RPCParam<std::string>::operator std::string() const { return value.get_str(); }
+template <> RPCParam<std::string>::operator std::string() const
+{
+    if (!value.isNull()) return value.get_str();
+    CHECK_NONFATAL(arg.m_fallback.which() == 1);
+    return boost::get<std::string>(arg.m_fallback);
+}
 template <> RPCParam<uint256>::operator uint256() const { return ParseHashV(value, arg.GetName()); }
 
 bool RPCHelpMan::IsValidNumArgs(size_t num_args) const
