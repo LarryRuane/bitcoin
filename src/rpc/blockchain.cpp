@@ -211,7 +211,7 @@ static RPCHelpMan getblockcount()
                     HelpExampleCli("getblockcount", "")
             + HelpExampleRpc("getblockcount", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext&) -> UniValue
 {
     LOCK(cs_main);
     return ::ChainActive().Height();
@@ -230,7 +230,7 @@ static RPCHelpMan getbestblockhash()
                     HelpExampleCli("getbestblockhash", "")
             + HelpExampleRpc("getbestblockhash", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext&) -> UniValue
 {
     LOCK(cs_main);
     return ::ChainActive().Tip()->GetBlockHash().GetHex();
@@ -266,11 +266,9 @@ static RPCHelpMan waitfornewblock()
                     HelpExampleCli("waitfornewblock", "1000")
             + HelpExampleRpc("waitfornewblock", "1000")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    int timeout = 0;
-    if (!request.params[0].isNull())
-        timeout = request.params[0].get_int();
+    int timeout = ctx.param<int>(0).defaults(0);
 
     CUpdatedBlock block;
     {
@@ -309,14 +307,10 @@ static RPCHelpMan waitforblock()
                     HelpExampleCli("waitforblock", "\"0000000000079f8ef3d2c688c244eb7a4570b24c9ed7b4a8c619eb02596f8862\" 1000")
             + HelpExampleRpc("waitforblock", "\"0000000000079f8ef3d2c688c244eb7a4570b24c9ed7b4a8c619eb02596f8862\", 1000")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    int timeout = 0;
-
-    uint256 hash(ParseHashV(request.params[0], "blockhash"));
-
-    if (!request.params[1].isNull())
-        timeout = request.params[1].get_int();
+    uint256 hash = ctx.param<uint256>(0);
+    int timeout = ctx.param<int>(1).defaults(0);
 
     CUpdatedBlock block;
     {
@@ -356,14 +350,10 @@ static RPCHelpMan waitforblockheight()
                     HelpExampleCli("waitforblockheight", "100 1000")
             + HelpExampleRpc("waitforblockheight", "100, 1000")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    int timeout = 0;
-
-    int height = request.params[0].get_int();
-
-    if (!request.params[1].isNull())
-        timeout = request.params[1].get_int();
+    int height = ctx.param<int>(0);
+    int timeout = ctx.param<int>(1).defaults(0);
 
     CUpdatedBlock block;
     {
@@ -392,7 +382,7 @@ static RPCHelpMan syncwithvalidationinterfacequeue()
                     HelpExampleCli("syncwithvalidationinterfacequeue","")
             + HelpExampleRpc("syncwithvalidationinterfacequeue","")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext&) -> UniValue
 {
     SyncWithValidationInterfaceQueue();
     return NullUniValue;
@@ -411,7 +401,7 @@ static RPCHelpMan getdifficulty()
                     HelpExampleCli("getdifficulty", "")
             + HelpExampleRpc("getdifficulty", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext&) -> UniValue
 {
     LOCK(cs_main);
     return GetDifficulty(::ChainActive().Tip());
@@ -585,18 +575,12 @@ static RPCHelpMan getrawmempool()
                     HelpExampleCli("getrawmempool", "true")
             + HelpExampleRpc("getrawmempool", "true")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    bool fVerbose = false;
-    if (!request.params[0].isNull())
-        fVerbose = request.params[0].get_bool();
+    bool fVerbose = ctx.param<bool>(0).defaults(false);
+    bool include_mempool_sequence = ctx.param<bool>(1).defaults(false);
 
-    bool include_mempool_sequence = false;
-    if (!request.params[1].isNull()) {
-        include_mempool_sequence = request.params[1].get_bool();
-    }
-
-    return MempoolToJSON(EnsureMemPool(request.context), fVerbose, include_mempool_sequence);
+    return MempoolToJSON(EnsureMemPool(ctx.m_request.context), fVerbose, include_mempool_sequence);
 },
     };
 }
@@ -623,15 +607,12 @@ static RPCHelpMan getmempoolancestors()
                     HelpExampleCli("getmempoolancestors", "\"mytxid\"")
             + HelpExampleRpc("getmempoolancestors", "\"mytxid\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    bool fVerbose = false;
-    if (!request.params[1].isNull())
-        fVerbose = request.params[1].get_bool();
+    bool fVerbose = ctx.param<bool>(1).defaults(false);
+    uint256 hash = ctx.param<uint256>(0);
 
-    uint256 hash = ParseHashV(request.params[0], "parameter 1");
-
-    const CTxMemPool& mempool = EnsureMemPool(request.context);
+    const CTxMemPool& mempool = EnsureMemPool(ctx.m_request.context);
     LOCK(mempool.cs);
 
     CTxMemPool::txiter it = mempool.mapTx.find(hash);
@@ -687,15 +668,12 @@ static RPCHelpMan getmempooldescendants()
                     HelpExampleCli("getmempooldescendants", "\"mytxid\"")
             + HelpExampleRpc("getmempooldescendants", "\"mytxid\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    bool fVerbose = false;
-    if (!request.params[1].isNull())
-        fVerbose = request.params[1].get_bool();
+    bool fVerbose = ctx.param<bool>(1).defaults(false);
+    uint256 hash = ctx.param<uint256>(0);
 
-    uint256 hash = ParseHashV(request.params[0], "parameter 1");
-
-    const CTxMemPool& mempool = EnsureMemPool(request.context);
+    const CTxMemPool& mempool = EnsureMemPool(ctx.m_request.context);
     LOCK(mempool.cs);
 
     CTxMemPool::txiter it = mempool.mapTx.find(hash);
@@ -743,11 +721,11 @@ static RPCHelpMan getmempoolentry()
                     HelpExampleCli("getmempoolentry", "\"mytxid\"")
             + HelpExampleRpc("getmempoolentry", "\"mytxid\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    uint256 hash = ParseHashV(request.params[0], "parameter 1");
+    uint256 hash = ctx.param<uint256>(0);
 
-    const CTxMemPool& mempool = EnsureMemPool(request.context);
+    const CTxMemPool& mempool = EnsureMemPool(ctx.m_request.context);
     LOCK(mempool.cs);
 
     CTxMemPool::txiter it = mempool.mapTx.find(hash);
@@ -776,11 +754,11 @@ static RPCHelpMan getblockhash()
                     HelpExampleCli("getblockhash", "1000")
             + HelpExampleRpc("getblockhash", "1000")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     LOCK(cs_main);
 
-    int nHeight = request.params[0].get_int();
+    int nHeight = ctx.param<int>(0);
     if (nHeight < 0 || nHeight > ::ChainActive().Height())
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Block height out of range");
 
@@ -826,13 +804,10 @@ static RPCHelpMan getblockheader()
                     HelpExampleCli("getblockheader", "\"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09\"")
             + HelpExampleRpc("getblockheader", "\"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    uint256 hash(ParseHashV(request.params[0], "hash"));
-
-    bool fVerbose = true;
-    if (!request.params[1].isNull())
-        fVerbose = request.params[1].get_bool();
+    uint256 hash = ctx.param<uint256>(0);
+    bool fVerbose = ctx.param<bool>(1).defaults(true);
 
     const CBlockIndex* pblockindex;
     const CBlockIndex* tip;
@@ -944,17 +919,15 @@ static RPCHelpMan getblock()
                     HelpExampleCli("getblock", "\"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09\"")
             + HelpExampleRpc("getblock", "\"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    uint256 hash(ParseHashV(request.params[0], "blockhash"));
+    uint256 hash = ctx.param<uint256>(0);
 
-    int verbosity = 1;
-    if (!request.params[1].isNull()) {
-        if(request.params[1].isNum())
-            verbosity = request.params[1].get_int();
-        else
-            verbosity = request.params[1].get_bool() ? 1 : 0;
-    }
+    int verbosity = ctx.param(1, [](const UniValue& param) -> int {
+        if (param.isNull()) return 1;
+        if (param.isNum()) return param.get_int();
+        return param.get_bool() ? 1 : 0;
+    });
 
     CBlock block;
     const CBlockIndex* pblockindex;
@@ -997,14 +970,14 @@ static RPCHelpMan pruneblockchain()
                     HelpExampleCli("pruneblockchain", "1000")
             + HelpExampleRpc("pruneblockchain", "1000")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     if (!fPruneMode)
         throw JSONRPCError(RPC_MISC_ERROR, "Cannot prune blocks because node is not in prune mode.");
 
     LOCK(cs_main);
 
-    int heightParam = request.params[0].get_int();
+    int heightParam = ctx.param<int>(0);
     if (heightParam < 0)
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Negative block height.");
 
@@ -1065,17 +1038,17 @@ static RPCHelpMan gettxoutsetinfo()
                     HelpExampleCli("gettxoutsetinfo", "")
             + HelpExampleRpc("gettxoutsetinfo", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     UniValue ret(UniValue::VOBJ);
 
     CCoinsStats stats;
     ::ChainstateActive().ForceFlushStateToDisk();
 
-    const CoinStatsHashType hash_type = ParseHashType(request.params[0], CoinStatsHashType::HASH_SERIALIZED);
+    const CoinStatsHashType hash_type = ParseHashType(ctx.param(0), CoinStatsHashType::HASH_SERIALIZED);
 
     CCoinsView* coins_view = WITH_LOCK(cs_main, return &ChainstateActive().CoinsDB());
-    NodeContext& node = EnsureNodeContext(request.context);
+    NodeContext& node = EnsureNodeContext(ctx.m_request.context);
     if (GetUTXOStats(coins_view, stats, hash_type, node.rpc_interruption_point)) {
         ret.pushKV("height", (int64_t)stats.nHeight);
         ret.pushKV("bestblock", stats.hashBlock.GetHex());
@@ -1129,24 +1102,22 @@ static RPCHelpMan gettxout()
             "\nAs a JSON-RPC call\n"
             + HelpExampleRpc("gettxout", "\"txid\", 1")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     LOCK(cs_main);
 
     UniValue ret(UniValue::VOBJ);
 
-    uint256 hash(ParseHashV(request.params[0], "txid"));
-    int n = request.params[1].get_int();
+    uint256 hash = ctx.param<uint256>(0);
+    int n = ctx.param<int>(1);
     COutPoint out(hash, n);
-    bool fMempool = true;
-    if (!request.params[2].isNull())
-        fMempool = request.params[2].get_bool();
+    bool fMempool = ctx.param<bool>(2).defaults(true);
 
     Coin coin;
     CCoinsViewCache* coins_view = &::ChainstateActive().CoinsTip();
 
     if (fMempool) {
-        const CTxMemPool& mempool = EnsureMemPool(request.context);
+        const CTxMemPool& mempool = EnsureMemPool(ctx.m_request.context);
         LOCK(mempool.cs);
         CCoinsViewMemPool view(coins_view, mempool);
         if (!view.GetCoin(out, coin) || mempool.isSpent(out)) {
@@ -1191,10 +1162,10 @@ static RPCHelpMan verifychain()
                     HelpExampleCli("verifychain", "")
             + HelpExampleRpc("verifychain", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    const int check_level(request.params[0].isNull() ? DEFAULT_CHECKLEVEL : request.params[0].get_int());
-    const int check_depth{request.params[1].isNull() ? DEFAULT_CHECKBLOCKS : request.params[1].get_int()};
+    const int check_level(ctx.param<int>(0).defaults(DEFAULT_CHECKLEVEL));
+    const int check_depth{ctx.param<int>(1).defaults(DEFAULT_CHECKBLOCKS)};
 
     LOCK(cs_main);
 
@@ -1322,7 +1293,7 @@ RPCHelpMan getblockchaininfo()
                     HelpExampleCli("getblockchaininfo", "")
             + HelpExampleRpc("getblockchaininfo", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext&) -> UniValue
 {
     LOCK(cs_main);
 
@@ -1413,9 +1384,9 @@ static RPCHelpMan getchaintips()
                     HelpExampleCli("getchaintips", "")
             + HelpExampleRpc("getchaintips", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    ChainstateManager& chainman = EnsureChainman(request.context);
+    ChainstateManager& chainman = EnsureChainman(ctx.m_request.context);
     LOCK(cs_main);
 
     /*
@@ -1523,9 +1494,9 @@ static RPCHelpMan getmempoolinfo()
                     HelpExampleCli("getmempoolinfo", "")
             + HelpExampleRpc("getmempoolinfo", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    return MempoolInfoToJSON(EnsureMemPool(request.context));
+    return MempoolInfoToJSON(EnsureMemPool(ctx.m_request.context));
 },
     };
 }
@@ -1544,9 +1515,9 @@ static RPCHelpMan preciousblock()
                     HelpExampleCli("preciousblock", "\"blockhash\"")
             + HelpExampleRpc("preciousblock", "\"blockhash\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    uint256 hash(ParseHashV(request.params[0], "blockhash"));
+    uint256 hash = ctx.param<uint256>(0);
     CBlockIndex* pblockindex;
 
     {
@@ -1581,9 +1552,9 @@ static RPCHelpMan invalidateblock()
                     HelpExampleCli("invalidateblock", "\"blockhash\"")
             + HelpExampleRpc("invalidateblock", "\"blockhash\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    uint256 hash(ParseHashV(request.params[0], "blockhash"));
+    uint256 hash = ctx.param<uint256>(0);
     BlockValidationState state;
 
     CBlockIndex* pblockindex;
@@ -1622,9 +1593,9 @@ static RPCHelpMan reconsiderblock()
                     HelpExampleCli("reconsiderblock", "\"blockhash\"")
             + HelpExampleRpc("reconsiderblock", "\"blockhash\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    uint256 hash(ParseHashV(request.params[0], "blockhash"));
+    uint256 hash = ctx.param<uint256>(0);
 
     {
         LOCK(cs_main);
@@ -1672,16 +1643,16 @@ static RPCHelpMan getchaintxstats()
                     HelpExampleCli("getchaintxstats", "")
             + HelpExampleRpc("getchaintxstats", "2016")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     const CBlockIndex* pindex;
     int blockcount = 30 * 24 * 60 * 60 / Params().GetConsensus().nPowTargetSpacing; // By default: 1 month
 
-    if (request.params[1].isNull()) {
+    if (ctx.param(1).isNull()) {
         LOCK(cs_main);
         pindex = ::ChainActive().Tip();
     } else {
-        uint256 hash(ParseHashV(request.params[1], "blockhash"));
+        uint256 hash = ctx.param<uint256>(1);
         LOCK(cs_main);
         pindex = LookupBlockIndex(hash);
         if (!pindex) {
@@ -1694,10 +1665,10 @@ static RPCHelpMan getchaintxstats()
 
     CHECK_NONFATAL(pindex != nullptr);
 
-    if (request.params[0].isNull()) {
+    if (ctx.param(0).isNull()) {
         blockcount = std::max(0, std::min(blockcount, pindex->nHeight - 1));
     } else {
-        blockcount = request.params[0].get_int();
+        blockcount = ctx.param<int>(0);
 
         if (blockcount < 0 || (blockcount > 0 && blockcount >= pindex->nHeight)) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid block count: should be between 0 and the block's height - 1");
@@ -1843,13 +1814,13 @@ static RPCHelpMan getblockstats()
                     HelpExampleRpc("getblockstats", R"("00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09", ["minfeerate","avgfeerate"])") +
                     HelpExampleRpc("getblockstats", R"(1000, ["minfeerate","avgfeerate"])")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     LOCK(cs_main);
 
     CBlockIndex* pindex;
-    if (request.params[0].isNum()) {
-        const int height = request.params[0].get_int();
+    if (ctx.param(0).isNum()) {
+        const int height = ctx.param<int>(0);
         const int current_tip = ::ChainActive().Height();
         if (height < 0) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Target block height %d is negative", height));
@@ -1860,7 +1831,7 @@ static RPCHelpMan getblockstats()
 
         pindex = ::ChainActive()[height];
     } else {
-        const uint256 hash(ParseHashV(request.params[0], "hash_or_height"));
+        const uint256 hash = ctx.param<uint256>(0);
         pindex = LookupBlockIndex(hash);
         if (!pindex) {
             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
@@ -1873,13 +1844,9 @@ static RPCHelpMan getblockstats()
     CHECK_NONFATAL(pindex != nullptr);
 
     std::set<std::string> stats;
-    if (!request.params[1].isNull()) {
-        const UniValue stats_univalue = request.params[1].get_array();
-        for (unsigned int i = 0; i < stats_univalue.size(); i++) {
-            const std::string stat = stats_univalue[i].get_str();
-            stats.insert(stat);
-        }
-    }
+    ctx.param(1).forEach([&](const UniValue& stat) {
+        stats.insert(stat.get_str());
+    });
 
     const CBlock block = GetBlockChecked(pindex);
     const CBlockUndo blockUndo = GetUndoChecked(pindex);
@@ -2054,9 +2021,9 @@ static RPCHelpMan savemempool()
                     HelpExampleCli("savemempool", "")
             + HelpExampleRpc("savemempool", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    const CTxMemPool& mempool = EnsureMemPool(request.context);
+    const CTxMemPool& mempool = EnsureMemPool(ctx.m_request.context);
 
     if (!mempool.IsLoaded()) {
         throw JSONRPCError(RPC_MISC_ERROR, "The mempool was not loaded yet");
@@ -2186,12 +2153,13 @@ static RPCHelpMan scantxoutset()
                         {RPCResult::Type::STR_AMOUNT, "total_amount", "The total amount of all found unspent outputs in " + CURRENCY_UNIT},
                     }},
                 RPCExamples{""},
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    RPCTypeCheck(request.params, {UniValue::VSTR, UniValue::VARR});
+    RPCTypeCheck(ctx.m_request.params, {UniValue::VSTR, UniValue::VARR});
 
     UniValue result(UniValue::VOBJ);
-    if (request.params[0].get_str() == "status") {
+    std::string action = ctx.param<std::string>(0);
+    if (action == "status") {
         CoinsViewScanReserver reserver;
         if (reserver.reserve()) {
             // no scan in progress
@@ -2199,7 +2167,7 @@ static RPCHelpMan scantxoutset()
         }
         result.pushKV("progress", g_scan_progress);
         return result;
-    } else if (request.params[0].get_str() == "abort") {
+    } else if (action == "abort") {
         CoinsViewScanReserver reserver;
         if (reserver.reserve()) {
             // reserve was possible which means no scan was running
@@ -2208,13 +2176,13 @@ static RPCHelpMan scantxoutset()
         // set the abort flag
         g_should_abort_scan = true;
         return true;
-    } else if (request.params[0].get_str() == "start") {
+    } else if (action == "start") {
         CoinsViewScanReserver reserver;
         if (!reserver.reserve()) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Scan already in progress, use action \"abort\" or \"status\"");
         }
 
-        if (request.params.size() < 2) {
+        if (ctx.m_request.params.size() < 2) {
             throw JSONRPCError(RPC_MISC_ERROR, "scanobjects argument is required for the start action");
         }
 
@@ -2223,7 +2191,7 @@ static RPCHelpMan scantxoutset()
         CAmount total_in = 0;
 
         // loop through the scan objects
-        for (const UniValue& scanobject : request.params[1].get_array().getValues()) {
+        ctx.param(1).forEach([&](const UniValue& scanobject) {
             FlatSigningProvider provider;
             auto scripts = EvalDescriptorStringOrObject(scanobject, provider);
             for (const auto& script : scripts) {
@@ -2231,7 +2199,7 @@ static RPCHelpMan scantxoutset()
                 needles.emplace(script);
                 descriptors.emplace(std::move(script), std::move(inferred));
             }
-        }
+        });
 
         // Scan the unspent transaction output set for inputs
         UniValue unspents(UniValue::VARR);
@@ -2250,7 +2218,7 @@ static RPCHelpMan scantxoutset()
             tip = ::ChainActive().Tip();
             CHECK_NONFATAL(tip);
         }
-        NodeContext& node = EnsureNodeContext(request.context);
+        NodeContext& node = EnsureNodeContext(ctx.m_request.context);
         bool res = FindScriptPubKey(g_scan_progress, g_should_abort_scan, count, pcursor.get(), needles, coins, node.rpc_interruption_point);
         result.pushKV("success", res);
         result.pushKV("txouts", count);
@@ -2302,13 +2270,10 @@ static RPCHelpMan getblockfilter()
                     HelpExampleCli("getblockfilter", "\"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09\" \"basic\"") +
                     HelpExampleRpc("getblockfilter", "\"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09\", \"basic\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    uint256 block_hash = ParseHashV(request.params[0], "blockhash");
-    std::string filtertype_name = "basic";
-    if (!request.params[1].isNull()) {
-        filtertype_name = request.params[1].get_str();
-    }
+    uint256 block_hash = ctx.param<uint256>(0);
+    std::string filtertype_name = ctx.param<std::string>(1).defaults("basic");
 
     BlockFilterType filtertype;
     if (!BlockFilterTypeByName(filtertype_name, filtertype)) {
@@ -2391,12 +2356,12 @@ static RPCHelpMan dumptxoutset()
         RPCExamples{
             HelpExampleCli("dumptxoutset", "utxo.dat")
         },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    fs::path path = fs::absolute(request.params[0].get_str(), GetDataDir());
+    fs::path path = fs::absolute(static_cast<std::string>(ctx.param<std::string>(0)), GetDataDir());
     // Write to a temporary path and then move into `path` on completion
     // to avoid confusion due to an interruption.
-    fs::path temppath = fs::absolute(request.params[0].get_str() + ".incomplete", GetDataDir());
+    fs::path temppath = fs::absolute(static_cast<std::string>(ctx.param<std::string>(0)) + ".incomplete", GetDataDir());
 
     if (fs::exists(path)) {
         throw JSONRPCError(
@@ -2410,7 +2375,7 @@ static RPCHelpMan dumptxoutset()
     std::unique_ptr<CCoinsViewCursor> pcursor;
     CCoinsStats stats;
     CBlockIndex* tip;
-    NodeContext& node = EnsureNodeContext(request.context);
+    NodeContext& node = EnsureNodeContext(ctx.m_request.context);
 
     {
         // We need to lock cs_main to ensure that the coinsdb isn't written to
