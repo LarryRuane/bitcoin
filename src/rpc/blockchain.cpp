@@ -2182,7 +2182,7 @@ static RPCHelpMan scantxoutset()
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Scan already in progress, use action \"abort\" or \"status\"");
         }
 
-        if (ctx.m_request.params.size() < 2) {
+        if (ctx.size() < 2) {
             throw JSONRPCError(RPC_MISC_ERROR, "scanobjects argument is required for the start action");
         }
 

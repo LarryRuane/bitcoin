@@ -488,6 +488,7 @@ template <> RPCDefaultParam<std::string>::operator std::string() const { return 
 template <> RPCParam<UniValue>::operator UniValue() const { return value; }
 template <> RPCParam<bool>::operator bool() const { return value.get_bool(); }
 template <> RPCParam<int>::operator int() const { return value.get_int(); }
+template <> RPCParam<int64_t>::operator int64_t() const { return value.get_int64(); }
 template <> RPCParam<std::string>::operator std::string() const
 {
     if (!value.isNull()) return value.get_str();

@@ -52,9 +52,9 @@ static RPCHelpMan validateaddress()
                     HelpExampleCli("validateaddress", "\"" + EXAMPLE_ADDRESS[0] + "\"") +
                     HelpExampleRpc("validateaddress", "\"" + EXAMPLE_ADDRESS[0] + "\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    CTxDestination dest = DecodeDestination(request.params[0].get_str());
+    CTxDestination dest = DecodeDestination(ctx.param<std::string>(0));
     bool isValid = IsValidDestination(dest);
 
     UniValue ret(UniValue::VOBJ);
@@ -102,28 +102,31 @@ static RPCHelpMan createmultisig()
             "\nAs a JSON-RPC call\n"
             + HelpExampleRpc("createmultisig", "2, \"[\\\"03789ed0bb717d88f7d321a368d905e7430207ebbd82bd342cf11ae157a7ace5fd\\\",\\\"03dbc6764b8884a92e871274b87583e6d5c2a58819473e17e107ef3f6aa5a61626\\\"]\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    int required = request.params[0].get_int();
+    int required = ctx.param<int>(0);
 
     // Get the public keys
-    const UniValue& keys = request.params[1].get_array();
     std::vector<CPubKey> pubkeys;
-    for (unsigned int i = 0; i < keys.size(); ++i) {
-        if (IsHex(keys[i].get_str()) && (keys[i].get_str().length() == 66 || keys[i].get_str().length() == 130)) {
-            pubkeys.push_back(HexToPubKey(keys[i].get_str()));
+    ctx.param(1).forEach([&](const UniValue& key) {
+        if (IsHex(key.get_str()) && (key.get_str().length() == 66 || key.get_str().length() == 130)) {
+            pubkeys.push_back(HexToPubKey(key.get_str()));
         } else {
-            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("Invalid public key: %s\n.", keys[i].get_str()));
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("Invalid public key: %s\n.", key.get_str()));
         }
-    }
+    });
 
     // Get the output type
-    OutputType output_type = OutputType::LEGACY;
-    if (!request.params[2].isNull()) {
-        if (!ParseOutputType(request.params[2].get_str(), output_type)) {
-            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("Unknown address type '%s'", request.params[2].get_str()));
+    OutputType output_type = ctx.param(2, [](const UniValue& param) -> OutputType {
+        if (param.isNull()) return OutputType::LEGACY;
+        std::string address_type = param.get_str();
+        OutputType output_type;
+        if (!ParseOutputType(address_type, output_type)) {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("Unknown address type '%s'", address_type));
         }
-    }
+        return output_type;
+    });
+
 
     // Construct using pay-to-script-hash:
     FillableSigningProvider keystore;
@@ -164,20 +167,20 @@ static RPCHelpMan getdescriptorinfo()
                 "Analyse a descriptor\n" +
                 HelpExampleCli("getdescriptorinfo", "\"wpkh([d34db33f/84h/0h/0h]0279be667ef9dcbbac55a06295Ce870b07029Bfcdb2dce28d959f2815b16f81798)\"")
             },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    RPCTypeCheck(request.params, {UniValue::VSTR});
+    RPCTypeCheck(ctx.m_request.params, {UniValue::VSTR});
 
     FlatSigningProvider provider;
     std::string error;
-    auto desc = Parse(request.params[0].get_str(), provider, error);
+    auto desc = Parse(ctx.param<std::string>(0), provider, error);
     if (!desc) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, error);
     }
 
     UniValue result(UniValue::VOBJ);
     result.pushKV("descriptor", desc->ToString());
-    result.pushKV("checksum", GetDescriptorChecksum(request.params[0].get_str()));
+    result.pushKV("checksum", GetDescriptorChecksum(ctx.param<std::string>(0)));
     result.pushKV("isrange", desc->IsRange());
     result.pushKV("issolvable", desc->IsSolvable());
     result.pushKV("hasprivatekeys", provider.keys.size() > 0);
@@ -212,16 +215,16 @@ static RPCHelpMan deriveaddresses()
                 "First three native segwit receive addresses\n" +
                 HelpExampleCli("deriveaddresses", "\"wpkh([d34db33f/84h/0h/0h]xpub6DJ2dNUysrn5Vt36jH2KLBT2i1auw1tTSSomg8PhqNiUtx8QX2SvC9nrHu81fT41fvDUnhMjEzQgXnQjKEu3oaqMSzhSrHMxyyoEAmUHQbY/0/*)#cjjspncu\" \"[0,2]\"")
             },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    RPCTypeCheck(request.params, {UniValue::VSTR, UniValueType()}); // Range argument is checked later
-    const std::string desc_str = request.params[0].get_str();
+    RPCTypeCheck(ctx.m_request.params, {UniValue::VSTR, UniValueType()}); // Range argument is checked later
+    const std::string desc_str = ctx.param<std::string>(0);
 
     int64_t range_begin = 0;
     int64_t range_end = 0;
 
-    if (request.params.size() >= 2 && !request.params[1].isNull()) {
-        std::tie(range_begin, range_end) = ParseDescriptorRange(request.params[1]);
+    if (ctx.size() >= 2 && !ctx.param(1).isNull()) {
+        std::tie(range_begin, range_end) = ParseDescriptorRange(ctx.param<UniValue>(1));
     }
 
     FlatSigningProvider key_provider;
@@ -231,11 +234,11 @@ static RPCHelpMan deriveaddresses()
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, error);
     }
 
-    if (!desc->IsRange() && request.params.size() > 1) {
+    if (!desc->IsRange() && ctx.size() > 1) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Range should not be specified for an un-ranged descriptor");
     }
 
-    if (desc->IsRange() && request.params.size() == 1) {
+    if (desc->IsRange() && ctx.size() == 1) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Range must be specified for a ranged descriptor");
     }
 
@@ -290,13 +293,13 @@ static RPCHelpMan verifymessage()
             "\nAs a JSON-RPC call\n"
             + HelpExampleRpc("verifymessage", "\"1D1ZrZNe3JUo7ZycKEYQQiQAWd9y54F4XX\", \"signature\", \"my message\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     LOCK(cs_main);
 
-    std::string strAddress  = request.params[0].get_str();
-    std::string strSign     = request.params[1].get_str();
-    std::string strMessage  = request.params[2].get_str();
+    std::string strAddress  = ctx.param<std::string>(0);
+    std::string strSign     = ctx.param<std::string>(1);
+    std::string strMessage  = ctx.param<std::string>(2);
 
     switch (MessageVerify(strAddress, strSign, strMessage)) {
     case MessageVerificationResult::ERR_INVALID_ADDRESS:
@@ -336,10 +339,10 @@ static RPCHelpMan signmessagewithprivkey()
             "\nAs a JSON-RPC call\n"
             + HelpExampleRpc("signmessagewithprivkey", "\"privkey\", \"my message\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    std::string strPrivkey = request.params[0].get_str();
-    std::string strMessage = request.params[1].get_str();
+    std::string strPrivkey = ctx.param<std::string>(0);
+    std::string strMessage = ctx.param<std::string>(1);
 
     CKey key = DecodeSecret(strPrivkey);
     if (!key.IsValid()) {
@@ -367,7 +370,7 @@ static RPCHelpMan setmocktime()
                 },
                 RPCResult{RPCResult::Type::NONE, "", ""},
                 RPCExamples{""},
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     if (!Params().IsMockableChain()) {
         throw std::runtime_error("setmocktime is for regression testing (-regtest mode) only");
@@ -380,11 +383,11 @@ static RPCHelpMan setmocktime()
     // ensure all call sites of GetTime() are accessing this safely.
     LOCK(cs_main);
 
-    RPCTypeCheck(request.params, {UniValue::VNUM});
-    int64_t time = request.params[0].get_int64();
+    RPCTypeCheck(ctx.m_request.params, {UniValue::VNUM});
+    int64_t time = ctx.param<int64_t>(0);
     SetMockTime(time);
-    if (request.context.Has<NodeContext>()) {
-        for (const auto& chain_client : request.context.Get<NodeContext>().chain_clients) {
+    if (ctx.m_request.context.Has<NodeContext>()) {
+        for (const auto& chain_client : ctx.m_request.context.Get<NodeContext>().chain_clients) {
             chain_client->setMockTime(time);
         }
     }
@@ -403,22 +406,22 @@ static RPCHelpMan mockscheduler()
         },
         RPCResult{RPCResult::Type::NONE, "", ""},
         RPCExamples{""},
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     if (!Params().IsMockableChain()) {
         throw std::runtime_error("mockscheduler is for regression testing (-regtest mode) only");
     }
 
     // check params are valid values
-    RPCTypeCheck(request.params, {UniValue::VNUM});
-    int64_t delta_seconds = request.params[0].get_int64();
+    RPCTypeCheck(ctx.m_request.params, {UniValue::VNUM});
+    int64_t delta_seconds = ctx.param<int64_t>(0);
     if ((delta_seconds <= 0) || (delta_seconds > 3600)) {
         throw std::runtime_error("delta_time must be between 1 and 3600 seconds (1 hr)");
     }
 
     // protect against null pointer dereference
-    CHECK_NONFATAL(request.context.Has<NodeContext>());
-    NodeContext& node = request.context.Get<NodeContext>();
+    CHECK_NONFATAL(ctx.m_request.context.Has<NodeContext>());
+    NodeContext& node = ctx.m_request.context.Get<NodeContext>();
     CHECK_NONFATAL(node.scheduler);
     node.scheduler->MockForward(std::chrono::seconds(delta_seconds));
 
@@ -494,9 +497,9 @@ static RPCHelpMan getmemoryinfo()
                     HelpExampleCli("getmemoryinfo", "")
             + HelpExampleRpc("getmemoryinfo", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    std::string mode = request.params[0].isNull() ? "stats" : request.params[0].get_str();
+    std::string mode = ctx.param<std::string>(0).defaults("stats");
     if (mode == "stats") {
         UniValue obj(UniValue::VOBJ);
         obj.pushKV("locked", RPCLockedMemoryInfo());
@@ -565,14 +568,14 @@ static RPCHelpMan logging()
                     HelpExampleCli("logging", "\"[\\\"all\\\"]\" \"[\\\"http\\\"]\"")
             + HelpExampleRpc("logging", "[\"all\"], [\"libevent\"]")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
     uint32_t original_log_categories = LogInstance().GetCategoryMask();
-    if (request.params[0].isArray()) {
-        EnableOrDisableLogCategories(request.params[0], true);
+    if (ctx.param(0).isArray()) {
+        EnableOrDisableLogCategories(ctx.param<UniValue>(0), true);
     }
-    if (request.params[1].isArray()) {
-        EnableOrDisableLogCategories(request.params[1], false);
+    if (ctx.param(1).isArray()) {
+        EnableOrDisableLogCategories(ctx.param<UniValue>(1), false);
     }
     uint32_t updated_log_categories = LogInstance().GetCategoryMask();
     uint32_t changed_log_categories = original_log_categories ^ updated_log_categories;
@@ -622,13 +625,14 @@ static RPCHelpMan echo(const std::string& name)
                 },
                 RPCResult{RPCResult::Type::NONE, "", "Returns whatever was passed in"},
                 RPCExamples{""},
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCContext& ctx) -> UniValue
 {
-    if (request.params[9].isStr()) {
-        CHECK_NONFATAL(request.params[9].get_str() != "trigger_internal_bug");
+    if (ctx.param(9).isStr()) {
+        std::string arg9 = ctx.param<std::string>(9);
+        CHECK_NONFATAL(arg9 != "trigger_internal_bug");
     }
 
-    return request.params;
+    return ctx.m_request.params;
 },
     };
 }
@@ -672,10 +676,10 @@ static RPCHelpMan getindexinfo()
                   + HelpExampleCli("getindexinfo", "txindex")
                   + HelpExampleRpc("getindexinfo", "txindex")
                 },
-                [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+                [](const RPCContext& ctx) -> UniValue
 {
     UniValue result(UniValue::VOBJ);
-    const std::string index_name = request.params[0].isNull() ? "" : request.params[0].get_str();
+    const std::string index_name = ctx.param<std::string>(0).defaults("");
 
     if (g_txindex) {
         result.pushKVs(SummaryToJSON(g_txindex->GetSummary(), index_name));

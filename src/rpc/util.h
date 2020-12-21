@@ -345,8 +345,10 @@ struct RPCParam
     const UniValue& value;
     RPCDefaultParam<T> defaults(const T& defaults) const { return {arg, value, defaults}; }
     operator T() const;
-    bool isNull() const { return value.isNull(); }
-    bool isNum() const { return value.isNum(); }
+    bool isNull()  const { return value.isNull(); }
+    bool isNum()   const { return value.isNum(); }
+    bool isArray() const { return value.isArray(); }
+    bool isStr()   const { return value.isStr(); }
     template <typename F>
     void forEach(F fn) const {
         if (value.isNull()) return;
@@ -359,6 +361,7 @@ struct RPCParam
 template <> RPCDefaultParam<int>::operator int() const;
 template <> RPCParam<bool>::operator bool() const;
 template <> RPCParam<int>::operator int() const;
+template <> RPCParam<int64_t>::operator int64_t() const;
 template <> RPCParam<std::string>::operator std::string() const;
 template <> RPCParam<uint256>::operator uint256() const;
 
@@ -405,6 +408,7 @@ class RPCContext
 public:
     const RPCHelpMan& m_helpman;
     const JSONRPCRequest& m_request;
+    size_t size() const { return m_request.params.size(); };
     RPCContext(const RPCHelpMan& helpman, const JSONRPCRequest& request)
         : m_helpman(helpman), m_request(request) {}
 
