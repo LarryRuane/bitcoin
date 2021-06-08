@@ -268,6 +268,7 @@ public:
     void FinalizeNode(const CNode& node) override;
     bool ProcessMessages(CNode* pfrom, std::atomic<bool>& interrupt) override;
     bool SendMessages(CNode* pto) override EXCLUSIVE_LOCKS_REQUIRED(pto->cs_sendProcessing);
+    bool SendSyncGetheaders(const std::vector<CNode*>& vNodes) override;
 
     /** Implement PeerManager */
     void CheckForStaleTipAndEvictPeers() override;
@@ -335,6 +336,18 @@ private:
                                const std::vector<CBlockHeader>& headers,
                                bool via_compact_block);
 
+    /** If set, which node is currently getting headers for sync. */
+    std::optional<NodeId> m_getting_headers;
+
+    /** If set, a getheaders has completed (headers message received), and the maximum
+     * number of entries has been received (syncing), and this is the last valid
+     * received header. Needed to send the next getheaders.
+     */
+    const CBlockIndex* m_pindex_last;
+
+    /** There is an outstanding getheaders to the given peer. */
+    bool GettingHeaders(const CNode& node) { return m_getting_headers && *m_getting_headers == node.GetId(); }
+
     void SendBlockTransactions(CNode& pfrom, const CBlock& block, const BlockTransactionsRequest& req);
 
     /** Register with TxRequestTracker that an INV has been received from a
@@ -398,9 +411,6 @@ private:
      * their own locks.
      */
     std::map<NodeId, PeerRef> m_peer_map GUARDED_BY(m_peer_mutex);
-
-    /** Number of nodes with fSyncStarted. */
-    int nSyncStarted GUARDED_BY(cs_main) = 0;
 
     /**
      * Sources of received blocks, saved to be able punish them when processing
@@ -617,8 +627,8 @@ struct CNodeState {
     const CBlockIndex* pindexBestHeaderSent{nullptr};
     //! Length of current-streak of unconnecting headers announcements
     int nUnconnectingHeaders{0};
-    //! Whether we've started headers synchronization with this peer.
-    bool fSyncStarted{false};
+    //! Where in the chain is the next getheaders to go to for this peer.
+    const CBlockIndex* m_pindex_getheaders_next{nullptr};
     //! When to potentially disconnect peer for stalling headers download
     std::chrono::microseconds m_headers_sync_timeout{0us};
     //! Since when we're stalling block download progress (in microseconds), or 0.
@@ -1125,8 +1135,8 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
     CNodeState *state = State(nodeid);
     assert(state != nullptr);
 
-    if (state->fSyncStarted)
-        nSyncStarted--;
+    // Allow getheaders to be sent to another peer.
+    if (GettingHeaders(node)) m_getting_headers = {};
 
     for (const QueuedBlock& entry : state->vBlocksInFlight) {
         mapBlocksInFlight.erase(entry.hash);
@@ -2039,13 +2049,20 @@ void PeerManagerImpl::ProcessHeadersMessage(CNode& pfrom, const Peer& peer,
             nodestate->m_last_block_announcement = GetTime();
         }
 
-        if (nCount == MAX_HEADERS_RESULTS) {
+        if (nCount < MAX_HEADERS_RESULTS) {
+            // We are done syncing (with this peer at least).
+            nodestate->m_pindex_getheaders_next = {};
+            m_getting_headers = {};
+            LogPrintf("LMR less than full headers peer=%d\n", pfrom.GetId());
+        } else {
             // Headers message had its maximum size; the peer may have more headers.
             // TODO: optimize: if pindexLast is an ancestor of m_chainman.ActiveChain().Tip or pindexBestHeader, continue
             // from there instead.
-            LogPrint(BCLog::NET, "more getheaders (%d) to end to peer=%d (startheight:%d)\n",
-                                 pindexLast->nHeight, pfrom.GetId(), peer.m_starting_height);
-            m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::GETHEADERS, m_chainman.ActiveChain().GetLocator(pindexLast), uint256()));
+            LogPrintf("LMR full headers peer=%d last=%d GettingHeaders=%d\n", pfrom.GetId(), pindexLast->nHeight, GettingHeaders(pfrom));
+            if (GettingHeaders(pfrom)) {
+                assert(!m_pindex_last);
+                m_pindex_last = pindexLast;
+            }
         }
 
         // If this set of headers is valid and ends in a block with at least as
@@ -2853,7 +2870,8 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             }
         }
 
-        if (best_block != nullptr) {
+        // If syncing (IBD), the headers are being fetched elsewhere.
+        if (best_block != nullptr && !m_chainman.ActiveChainstate().IsInitialBlockDownload()) {
             m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::GETHEADERS, m_chainman.ActiveChain().GetLocator(pindexBestHeader), *best_block));
             LogPrint(BCLog::NET, "getheaders (%d) %s to peer=%d\n", pindexBestHeader->nHeight, best_block->ToString(), pfrom.GetId());
         }
@@ -4000,7 +4018,8 @@ void PeerManagerImpl::ConsiderEviction(CNode& pto, int64_t time_in_seconds)
     CNodeState &state = *State(pto.GetId());
     const CNetMsgMaker msgMaker(pto.GetCommonVersion());
 
-    if (!state.m_chain_sync.m_protect && pto.IsOutboundOrBlockRelayConn() && state.fSyncStarted) {
+    // LMR XXX figure this out
+    if (!state.m_chain_sync.m_protect && pto.IsOutboundOrBlockRelayConn() && GettingHeaders(pto)) {
         // This is an outbound peer subject to disconnection if they don't
         // announce a block with as much work as the current tip within
         // CHAIN_SYNC_TIMEOUT + HEADERS_RESPONSE_TIME seconds (note: if
@@ -4379,31 +4398,20 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         if (pindexBestHeader == nullptr)
             pindexBestHeader = m_chainman.ActiveChain().Tip();
         bool fFetch = state.fPreferredDownload || (nPreferredDownload == 0 && !pto->fClient && !pto->IsAddrFetchConn()); // Download if this is a nice peer, or we have no nice peers and this one might do.
-        if (!state.fSyncStarted && !pto->fClient && !fImporting && !fReindex) {
-            // Only actively request headers from a single peer, unless we're close to today.
-            if ((nSyncStarted == 0 && fFetch) || pindexBestHeader->GetBlockTime() > GetAdjustedTime() - 24 * 60 * 60) {
-                state.fSyncStarted = true;
-                state.m_headers_sync_timeout = current_time + HEADERS_DOWNLOAD_TIMEOUT_BASE +
-                    (
-                        // Convert HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER to microseconds before scaling
-                        // to maintain precision
-                        std::chrono::microseconds{HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER} *
-                        (GetAdjustedTime() - pindexBestHeader->GetBlockTime()) / consensusParams.nPowTargetSpacing
-                    );
-                nSyncStarted++;
-                const CBlockIndex *pindexStart = pindexBestHeader;
-                /* If possible, start at the block preceding the currently
-                   best known header.  This ensures that we always get a
-                   non-empty list of headers back as long as the peer
-                   is up-to-date.  With a non-empty response, we can initialise
-                   the peer's known best block.  This wouldn't be possible
-                   if we requested starting at pindexBestHeader and
-                   got back an empty response.  */
-                if (pindexStart->pprev)
-                    pindexStart = pindexStart->pprev;
-                LogPrint(BCLog::NET, "initial getheaders (%d) to peer=%d (startheight:%d)\n", pindexStart->nHeight, pto->GetId(), peer->m_starting_height);
-                m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETHEADERS, m_chainman.ActiveChain().GetLocator(pindexStart), uint256()));
-            }
+        if (!state.m_pindex_getheaders_next && !pto->fClient && !fImporting && !fReindex) {
+            // This is one of the peers we can get headers from.
+            // LMR XXX starting at pindexBestHeader
+            state.m_pindex_getheaders_next = pindexBestHeader;
+            LogPrintf("LMR starting headers peer=%d height=%d\n", pto->GetId(), pindexBestHeader->nHeight);
+            /* If possible, start at the block preceding the currently
+               best known header.  This ensures that we always get a
+               non-empty list of headers back as long as the peer
+               is up-to-date.  With a non-empty response, we can initialise
+               the peer's known best block.  This wouldn't be possible
+               if we requested starting at pindexBestHeader and
+               got back an empty response.  */
+            if (state.m_pindex_getheaders_next->pprev)
+                state.m_pindex_getheaders_next = state.m_pindex_getheaders_next->pprev;
         }
 
         //
@@ -4720,15 +4728,16 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
             }
         }
         // Check for headers sync timeouts
-        if (state.fSyncStarted && state.m_headers_sync_timeout < std::chrono::microseconds::max()) {
+        if (GettingHeaders(*pto) && state.m_headers_sync_timeout < std::chrono::microseconds::max()) {
             // Detect whether this is a stalling initial-headers-sync peer
             if (pindexBestHeader->GetBlockTime() <= GetAdjustedTime() - 24 * 60 * 60) {
-                if (current_time > state.m_headers_sync_timeout && nSyncStarted == 1 && (nPreferredDownload - state.fPreferredDownload >= 1)) {
+                if (current_time > state.m_headers_sync_timeout && (nPreferredDownload - state.fPreferredDownload >= 1)) {
                     // Disconnect a peer (without NetPermissionFlags::NoBan permission) if it is our only sync peer,
                     // and we have others we could be using instead.
                     // Note: If all our peers are inbound, then we won't
                     // disconnect our sync peer for stalling; we have bigger
                     // problems if we can't get any outbound peers.
+                    m_getting_headers = {};
                     if (!pto->HasPermission(NetPermissionFlags::NoBan)) {
                         LogPrintf("Timeout downloading headers from peer=%d, disconnecting\n", pto->GetId());
                         pto->fDisconnect = true;
@@ -4740,9 +4749,8 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                         // Note: this will also result in at least one more
                         // getheaders message to be sent to
                         // this peer (eventually).
-                        state.fSyncStarted = false;
-                        nSyncStarted--;
                         state.m_headers_sync_timeout = 0us;
+                        state.m_pindex_getheaders_next = nullptr;
                     }
                 }
             } else {
@@ -4811,5 +4819,91 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
 
         MaybeSendFeefilter(*pto, current_time);
     } // release cs_main
+    return true;
+}
+
+/**
+ * If there is a "request" to send a getheaders message to a peer
+ * (non-null m_pindex_getheaders_next), then randomly choose a peer among
+ * those with the lowest height. This will advance the various branches
+ * evenly
+ */
+bool PeerManagerImpl::SendSyncGetheaders(const std::vector<CNode*>& vNodes)
+{
+    const auto current_time = GetTime<std::chrono::microseconds>();
+    LOCK(cs_main);
+
+    // Has headers-getting peer received the "reply" (headers msg) yet?
+    if (m_pindex_last) {
+        LogPrintf("LMR SendSyncGetheaders last=%d\n", m_pindex_last->nHeight);
+        assert(m_getting_headers);
+        CNodeState& completed_state = *State(*m_getting_headers);
+        m_getting_headers = {};
+        assert(completed_state.m_pindex_getheaders_next);
+
+        // Let this result apply to all peers with the same start (so they
+        // don't repeat the same getheaders requests).
+        for (const CNode* pnode : vNodes) {
+            CNodeState &state = *State(pnode->GetId());
+            if (!state.m_pindex_getheaders_next) continue;
+            if (state.m_pindex_getheaders_next == completed_state.m_pindex_getheaders_next) {
+                LogPrintf("LMR SendSyncGetheaders advancing from=%d peer=%d\n", state.m_pindex_getheaders_next->nHeight, pnode->GetId());
+                state.m_pindex_getheaders_next = m_pindex_last;
+            }
+        }
+        m_pindex_last = nullptr;
+    }
+    // Don't send another getheaders if one is already in progress
+    if (m_getting_headers) return false;
+
+    // Choose a peer to send the next getheaders request to. Prefer to advance the
+    // peer with the lowest height (to keep branches even).
+    int min_height = std::numeric_limits<int>::max();
+    for (const CNode* pnode : vNodes) {
+        const CNodeState &state = *State(pnode->GetId());
+        if (!state.m_pindex_getheaders_next) continue;
+        if (min_height > state.m_pindex_getheaders_next->nHeight) {
+            min_height = state.m_pindex_getheaders_next->nHeight;
+        }
+    }
+    if (min_height == std::numeric_limits<int>::max()) return false;
+
+    // Find the number of peers that are at this minimum height.
+    int n{0};
+    for (const CNode* pnode : vNodes) {
+        const CNodeState &state = *State(pnode->GetId());
+        if (!state.m_pindex_getheaders_next) continue;
+        if (min_height <= state.m_pindex_getheaders_next->nHeight) n++;
+    }
+    assert(n > 0);
+    // set n to a random value in the range 0..(n-1)
+    {
+        unsigned int r;
+        GetRandBytes(reinterpret_cast<unsigned char*>(&r), sizeof(r));
+        n = r % n;
+    }
+
+    // Choose a random peer that's at the minimum height to send getheaders to.
+    for (CNode* pnode : vNodes) {
+        CNodeState &state = *State(pnode->GetId());
+        if (!state.m_pindex_getheaders_next) continue;
+        if (state.m_pindex_getheaders_next->nHeight > min_height) continue;
+        if (n--) continue;
+
+        // Send a getheaders to this peer.
+        m_getting_headers = pnode->GetId();
+        state.m_headers_sync_timeout = current_time + HEADERS_DOWNLOAD_TIMEOUT_BASE +
+            (
+                // Convert HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER to microseconds before scaling
+                // to maintain precision
+                std::chrono::microseconds{HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER} * MAX_HEADERS_RESULTS
+            );
+        const CNetMsgMaker msgMaker(pnode->GetCommonVersion());
+        auto locator{m_chainman.ActiveChain().GetLocator(state.m_pindex_getheaders_next)};
+        m_connman.PushMessage(pnode, msgMaker.Make(NetMsgType::GETHEADERS, locator, uint256()));
+        LogPrint(BCLog::NET, "getheaders (%d) to end to peer=%d\n",
+                             state.m_pindex_getheaders_next->nHeight, pnode->GetId());
+        break;
+    }
     return true;
 }

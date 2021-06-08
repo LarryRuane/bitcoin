@@ -2205,6 +2205,7 @@ void CConnman::ThreadMessageHandler()
             if (flagInterruptMsgProc)
                 return;
         }
+        m_msgproc->SendSyncGetheaders(vNodesCopy);
 
         {
             LOCK(cs_vNodes);

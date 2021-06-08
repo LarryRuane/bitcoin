@@ -735,6 +735,13 @@ public:
     */
     virtual bool SendMessages(CNode* pnode) EXCLUSIVE_LOCKS_REQUIRED(pnode->cs_sendProcessing) = 0;
 
+    /**
+    * Send a getheaders message during sync (IBD) if needed.
+    *
+    * @return                      True if a getheaders was sent
+    */
+    virtual bool SendSyncGetheaders(const std::vector<CNode*>& vNodes) = 0;
+
 
 protected:
     /**
