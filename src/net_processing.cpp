@@ -1987,7 +1987,10 @@ void PeerManagerImpl::ProcessHeadersMessage(CNode& pfrom, const Peer& peer,
         //   don't connect before giving DoS points
         // - Once a headers message is received that is valid and does connect,
         //   nUnconnectingHeaders gets reset back to 0.
-        if (!m_chainman.m_blockman.LookupBlockIndex(headers[0].hashPrevBlock) && nCount < MAX_BLOCKS_TO_ANNOUNCE) {
+        // LMR instead of checking IBD, should this see if the header date is within (say) one day of now?
+        if (!m_chainman.ActiveChainstate().IsInitialBlockDownload() &&
+                !m_chainman.m_blockman.LookupBlockIndex(headers[0].hashPrevBlock) &&
+                nCount < MAX_BLOCKS_TO_ANNOUNCE) {
             nodestate->nUnconnectingHeaders++;
             m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::GETHEADERS, m_chainman.ActiveChain().GetLocator(pindexBestHeader), uint256()));
             LogPrint(BCLog::NET, "received header %s: missing prev block %s, sending getheaders (%d) to end (peer=%d, nUnconnectingHeaders=%d)\n",
@@ -2062,6 +2065,9 @@ void PeerManagerImpl::ProcessHeadersMessage(CNode& pfrom, const Peer& peer,
             if (GettingHeaders(pfrom)) {
                 assert(!m_pindex_last);
                 m_pindex_last = pindexLast;
+                while ((m_pindex_last->nHeight % MAX_HEADERS_RESULTS) > 0) { 
+                    m_pindex_last = m_pindex_last->pprev;
+                }
             }
         }
 
@@ -4400,7 +4406,6 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         bool fFetch = state.fPreferredDownload || (nPreferredDownload == 0 && !pto->fClient && !pto->IsAddrFetchConn()); // Download if this is a nice peer, or we have no nice peers and this one might do.
         if (!state.m_pindex_getheaders_next && !pto->fClient && !fImporting && !fReindex) {
             // This is one of the peers we can get headers from.
-            // LMR XXX starting at pindexBestHeader
             state.m_pindex_getheaders_next = pindexBestHeader;
             LogPrintf("LMR starting headers peer=%d height=%d\n", pto->GetId(), pindexBestHeader->nHeight);
             /* If possible, start at the block preceding the currently
@@ -4410,7 +4415,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                the peer's known best block.  This wouldn't be possible
                if we requested starting at pindexBestHeader and
                got back an empty response.  */
-            if (state.m_pindex_getheaders_next->pprev)
+            if (!m_chainman.ActiveChainstate().IsInitialBlockDownload() && state.m_pindex_getheaders_next->pprev)
                 state.m_pindex_getheaders_next = state.m_pindex_getheaders_next->pprev;
         }
 
@@ -4840,13 +4845,16 @@ bool PeerManagerImpl::SendSyncGetheaders(const std::vector<CNode*>& vNodes)
         CNodeState& completed_state = *State(*m_getting_headers);
         m_getting_headers = {};
         assert(completed_state.m_pindex_getheaders_next);
+        const CBlockIndex* completed_pindex = completed_state.m_pindex_getheaders_next;
 
         // Let this result apply to all peers with the same start (so they
         // don't repeat the same getheaders requests).
         for (const CNode* pnode : vNodes) {
             CNodeState &state = *State(pnode->GetId());
+            if(0) LogPrintf("LMR loop peer=%d next=%d\n", pnode->GetId(), state.m_pindex_getheaders_next ? state.m_pindex_getheaders_next->nHeight : -1);
+            if(false && vNodes.size() > 1) { static int spin=1;while(spin);}
             if (!state.m_pindex_getheaders_next) continue;
-            if (state.m_pindex_getheaders_next == completed_state.m_pindex_getheaders_next) {
+            if (state.m_pindex_getheaders_next == completed_pindex) {
                 LogPrintf("LMR SendSyncGetheaders advancing from=%d peer=%d\n", state.m_pindex_getheaders_next->nHeight, pnode->GetId());
                 state.m_pindex_getheaders_next = m_pindex_last;
             }
