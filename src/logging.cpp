@@ -40,6 +40,39 @@ static int FileWriteStr(const std::string &str, FILE *fp)
     return fwrite(str.data(), 1, str.size(), fp);
 }
 
+namespace BCLog {
+
+    //! When Shift() returns, there will be (no more than) n backup files, numbered
+    //! 0 through n-1. The return value indicates the name to rename debug.log to.
+    int Shift(int const n, int const max,
+            std::function<bool (int)> exists,
+            std::function<void (int)> remove,
+            std::function<bool (int from, int to)> rename)
+    {
+        assert(n < max);
+        int i;
+        for (i = 0; i <= n; ++i) {
+            if (!exists(i)) return i;
+        }
+        for (i = i; i < max && exists(i); ++i);
+        for (int j = 0; j < n; ++j) {
+            remove(j);
+            rename(j + i - n, j);
+        }
+        for (int j = n; j < max; ++j) {
+            if (!exists(j)) break;
+            remove(j);
+        }
+        return n;
+    }
+}
+
+// handy things we might need:
+// https://en.cppreference.com/w/cpp/filesystem/path/replace_extension
+// https://www.cplusplus.com/reference/string/to_string/ (but we'll need leading zeros)
+// https://en.cppreference.com/w/cpp/filesystem/remove
+// https://en.cppreference.com/w/cpp/filesystem/rename
+
 bool BCLog::Logger::StartLogging()
 {
     StdLockGuard scoped_lock(m_cs);
@@ -54,11 +87,19 @@ bool BCLog::Logger::StartLogging()
             return false;
         }
 
+        // Special files (e.g. device nodes) may not have a size.
+        std::uintmax_t size = 0;
+        try {
+            size = fs::file_size(m_file_path);
+        } catch (const fs::filesystem_error&) {}
+
         setbuf(m_fileout, nullptr); // unbuffered
 
         // Add newlines to the logfile to distinguish this execution from the
         // last one.
-        FileWriteStr("\n\n\n\n\n", m_fileout);
+        std::string blank_lines{"\n\n\n\n\n"};
+        FileWriteStr(blank_lines, m_fileout);
+        if (m_size) *m_size += blank_lines.size();
     }
 
     // dump buffered messages from before we opened the log
@@ -66,7 +107,10 @@ bool BCLog::Logger::StartLogging()
     while (!m_msgs_before_open.empty()) {
         const std::string& s = m_msgs_before_open.front();
 
-        if (m_print_to_file) FileWriteStr(s, m_fileout);
+        if (m_print_to_file) {
+            FileWriteStr(s, m_fileout);
+            if (m_size) *m_size += s.size();
+        }
         if (m_print_to_console) fwrite(s.data(), 1, s.size(), stdout);
         for (const auto& cb : m_print_callbacks) {
             cb(s);
@@ -85,6 +129,7 @@ void BCLog::Logger::DisconnectTestLogger()
     m_buffering = true;
     if (m_fileout != nullptr) fclose(m_fileout);
     m_fileout = nullptr;
+    m_size = {};
     m_print_callbacks.clear();
 }
 
@@ -284,6 +329,20 @@ void BCLog::Logger::LogPrintStr(const std::string& str, const std::string& loggi
             }
         }
         FileWriteStr(str_prefixed, m_fileout);
+#if 0
+        if (m_size) {
+            *m_size += str_prefixed.size();
+            if (m_file_path.extension() == ".log") {
+                std::error_code ec;
+                if (*m_size > 1000*1000) {
+                    for (int i = 1; i < 100; ++i) {
+                        fs::remove(m_file_path.replace_extension("." + std::to_string(i)), ec))
+                        if (ec) break;
+                    }
+                }
+            }
+        }
+#endif
     }
 }
 

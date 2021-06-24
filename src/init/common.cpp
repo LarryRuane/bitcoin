@@ -119,7 +119,8 @@ void SetLoggingCategories(const ArgsManager& args)
 
 bool StartLogging(const ArgsManager& args)
 {
-    if (LogInstance().m_print_to_file) {
+    // LMR remove this
+    if(0) if (LogInstance().m_print_to_file) {
         if (args.GetBoolArg("-shrinkdebugfile", LogInstance().DefaultShrinkDebugFile())) {
             // Do this first since it both loads a bunch of debug.log into memory,
             // and because this needs to happen before any other debug.log printing

@@ -68,6 +68,7 @@ namespace BCLog {
         mutable StdMutex m_cs; // Can not use Mutex from sync.h because in debug mode it would cause a deadlock when a potential deadlock was detected
 
         FILE* m_fileout GUARDED_BY(m_cs) = nullptr;
+        std::optional<uintmax_t> m_size GUARDED_BY(m_cs); //!< Size of file in bytes referred to by m_fileout, if a regular file
         std::list<std::string> m_msgs_before_open GUARDED_BY(m_cs);
         bool m_buffering GUARDED_BY(m_cs) = true; //!< Buffer messages before logging can be started.
 
@@ -148,6 +149,12 @@ namespace BCLog {
 
         bool DefaultShrinkDebugFile() const;
     };
+
+    // Rotate log files
+    int Shift(int n, int max,
+            std::function<bool (int)> exists,
+            std::function<void (int)> remove,
+            std::function<bool (int from, int to)> rename);
 
 } // namespace BCLog
 
