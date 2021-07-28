@@ -4969,6 +4969,12 @@ CChainState& ChainstateManager::ActiveChainstate() const
     return *m_active_chainstate;
 }
 
+bool ChainstateManager::IsActiveChainstateSet() const
+{
+    LOCK(::cs_main);
+    return m_active_chainstate != nullptr;
+}
+
 bool ChainstateManager::IsSnapshotActive() const
 {
     LOCK(::cs_main);

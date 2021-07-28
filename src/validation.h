@@ -960,6 +960,9 @@ public:
         return m_blockman.m_block_index;
     }
 
+    //! @returns true if active chainstate is set.
+    bool IsActiveChainstateSet() const;
+
     //! @returns true if a snapshot-based chainstate is in use. Also implies
     //!          that a background validation chainstate is also in use.
     bool IsSnapshotActive() const;

@@ -922,6 +922,9 @@ bool PeerManagerImpl::TipMayBeStale()
 
 bool PeerManagerImpl::CanDirectFetch()
 {
+    // During startup, there may not be an active chainstate yet.
+    if (!m_chainman.IsActiveChainstateSet()) return false;
+
     return m_chainman.ActiveChain().Tip()->GetBlockTime() > GetAdjustedTime() - m_chainparams.GetConsensus().nPowTargetSpacing * 20;
 }
 
