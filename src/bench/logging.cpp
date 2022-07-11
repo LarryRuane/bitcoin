@@ -28,6 +28,24 @@ static void LoggingNoThreadNames(benchmark::Bench& bench)
 {
     Logging(bench, {"-logthreadnames=0"}, [] { LogPrintf("%s\n", "test"); });
 }
+static void LogPrintfCategoryWithThreadNames(benchmark::Bench& bench)
+{
+    Logging(bench, {"-logthreadnames=1"}, [] { LogPrintfCategory(BCLog::NET, "%s\n", "test"); });
+}
+static void LogPrintfCategoryWithoutThreadNames(benchmark::Bench& bench)
+{
+    Logging(bench, {"-logthreadnames=0"}, [] { LogPrintfCategory(BCLog::NET, "%s\n", "test"); });
+}
+static void LogPrintLevelWithThreadNames(benchmark::Bench& bench)
+{
+    Logging(bench, {"-logthreadnames=1"}, [] {
+        LogPrintLevel(BCLog::NET, BCLog::Level::Error, "%s\n", "test"); });
+}
+static void LogPrintLevelWithoutThreadNames(benchmark::Bench& bench)
+{
+    Logging(bench, {"-logthreadnames=0"}, [] {
+        LogPrintLevel(BCLog::NET, BCLog::Level::Error, "%s\n", "test"); });
+}
 static void LoggingYoCategory(benchmark::Bench& bench)
 {
     Logging(bench, {"-logthreadnames=0", "-debug=net"}, [] { LogPrint(BCLog::NET, "%s\n", "test"); });
@@ -46,6 +64,10 @@ static void LoggingNoFile(benchmark::Bench& bench)
 
 BENCHMARK(LoggingYoThreadNames, benchmark::PriorityLevel::HIGH);
 BENCHMARK(LoggingNoThreadNames, benchmark::PriorityLevel::HIGH);
+BENCHMARK(LogPrintfCategoryWithThreadNames, benchmark::PriorityLevel::HIGH);
+BENCHMARK(LogPrintfCategoryWithoutThreadNames, benchmark::PriorityLevel::HIGH);
+BENCHMARK(LogPrintLevelWithThreadNames, benchmark::PriorityLevel::HIGH);
+BENCHMARK(LogPrintLevelWithoutThreadNames, benchmark::PriorityLevel::HIGH);
 BENCHMARK(LoggingYoCategory, benchmark::PriorityLevel::HIGH);
 BENCHMARK(LoggingNoCategory, benchmark::PriorityLevel::HIGH);
 BENCHMARK(LoggingNoFile, benchmark::PriorityLevel::HIGH);
