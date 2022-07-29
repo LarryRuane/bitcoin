@@ -20,6 +20,8 @@ enum class OutputType {
     BECH32,
     BECH32M,
     UNKNOWN,
+    // insert new types here
+    MAX,
 };
 
 static constexpr auto OUTPUT_TYPES = std::array{
