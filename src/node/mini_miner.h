@@ -7,102 +7,74 @@
 
 #include <txmempool.h>
 
-#include <memory>
-#include <optional>
-#include <stdint.h>
-
 namespace node {
 
-// Container for tracking updates to ancestor feerate as we include ancestors in the "block"
-class MockMempoolEntry
-{
-    CAmount fee_individual;
-    const CTransaction& tx;
-
-public:
-    CAmount fee_with_ancestors;
-    int64_t vsize_individual;
-    int64_t vsize_with_ancestors;
-    explicit MockMempoolEntry(CTxMemPool::txiter entry) :
-        fee_individual{entry->GetModifiedFee()},
-        tx{entry->GetTx()},
-        fee_with_ancestors{entry->GetModFeesWithAncestors()},
-        vsize_individual(entry->GetTxSize()),
-        vsize_with_ancestors(entry->GetSizeWithAncestors())
-    { }
-
-    CAmount GetModifiedFee() const { return fee_individual; }
-    CAmount GetModFeesWithAncestors() const { return fee_with_ancestors; }
-    int64_t GetTxSize() const { return vsize_individual; }
-    int64_t GetSizeWithAncestors() const { return vsize_with_ancestors; }
-    const CTransaction& GetTx() const { return tx; }
-};
-
-void UpdateForMinedAncestor(const MockMempoolEntry& ancestor, const MockMempoolEntry& descendant);
-
-// Comparator needed for std::set<MockEntryMap::iterator>
-struct IteratorComparator
-{
-    template<typename I>
-    bool operator()(const I& a, const I& b) const
-    {
-        return &(*a) < &(*b);
-    }
-};
-
-/** A minimal version of BlockAssembler. Allows us to run the mining algorithm on a subset of
- * mempool transactions, ignoring consensus rules, to calculate mining scores. */
+/**
+ * A minimal version of BlockAssembler. Allows us to run the mining algorithm on a subset of
+ * mempool transactions, ignoring consensus rules, to calculate mining scores.
+ */
 class MiniMiner
 {
-    // Original outpoints requested
-    std::vector<COutPoint> requested_outpoints;
+    //! Copy of the original outpoints requested.
+    std::vector<COutPoint> m_requested_outpoints;
 
-    // Set once per lifetime, fill in during initialization.
-    // txids of to-be-replaced transactions
-    std::set<uint256> to_be_replaced;
+    /*
+     * A very simplified representation of a mempool transaction.
+     */
+    struct Tx {
+        int m_in_degree{0};             //! only for topological sort
+        bool m_mined{false};            //! this transaction has been "mined"
+        std::vector<size_t> m_parents;  //! references to our parents (unordered)
+        std::vector<size_t> m_children; //! references to our children (unordered)
+        CAmount m_fee{0};               //! fee of this individual transaction
+        uint32_t m_vsize{0};            //! virtual size of this individual transaction
+        CAmount m_ancestor_fee{0};      //! sum of our fee and all our ancestors
+        uint32_t m_ancestor_vsize{0};   //! sum of our vsize and all our ancestors
+    };
 
-    // After using the outpoints to figure out which transactions are to be replaced, we can just
-    // work with txids (each outpoint from a single tx should have the same bumpfee independently).
-    // Cache which outpoint are needed for each tx so we don't have to look up all the outputs.
-    // Excludes to-be-replaced and unavailable transactions (set to 0).
-    std::map<uint256, std::vector<COutPoint>> outpoints_needed_by_txid;
+    //! Index into `m_tx_vec`
+    using tx_index_t = size_t;
 
-    // What we're trying to calculate.
-    std::map<COutPoint, CAmount> bump_fees;
+    //! Transactions in the order encountered; the order is arbitrary.
+    std::vector<Tx> m_tx_vec;
 
-    // The constructed block template
-    std::set<uint256> in_block;
+    //! Return a transaction's index into m_tx_vec, given its txid (hash).
+    std::map<uint256, tx_index_t> m_tx_map;
 
-    // Information on the current status of the block
-    CAmount total_fees{0};
-    int64_t total_vsize{0};
+    //! References to transactions in topologically-sorted order, ancestors first.
+    std::vector<tx_index_t> m_top_sort;
 
-    /** Main data structure holding the entries, can be indexed by txid */
-    std::map<uint256, MockMempoolEntry> entries_by_txid;
-    using MockEntryMap = decltype(entries_by_txid);
-
-    /** Vector of entries, can be sorted by ancestor feerate. */
-    std::vector<MockEntryMap::iterator> entries;
-
-    /** Map of txid to its descendants. Should be inclusive. */
-    std::map<uint256, std::vector<MockEntryMap::iterator>> descendant_set_by_txid;
-
-    /** Consider this ancestor package "mined" so remove all these entries from our data structures. */
-    void DeleteAncestorPackage(const std::set<MockEntryMap::iterator, IteratorComparator>& ancestors);
-
-    /** Build a block template until the target feerate is hit. */
+    /**
+     * Build a block template of transactions with ancestor feerates greater
+     * or equal to the the target feerate, and calculate all transactions'
+     * ancestor fees and vsizes. The results are used by the calculate methods.
+     */
     void BuildMockTemplate(const CFeeRate& target_feerate);
 
 public:
+    /**
+     * Using the mempool, find all transactions "connected" to any of the given
+     * outpoints (this is called a cluster), and create simplified `Tx`
+     * representations of these, including their individual (but not ancestor)
+     * fee and size values, and their parent-child relationships with other
+     * transactions in the cluster (mined parents are not represented at all).
+     * This constructor is the only method of this object that uses the mempool.
+     */
     MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& outpoints);
 
-    /** Construct a new block template and, for each outpoint corresponding to a transaction that
-     * did not make it into the block, calculate the cost of bumping those transactions (and their
-     * ancestors) to the minimum feerate. */
+    /**
+     * Construct a new block template (which is not used for anything) and, for
+     * each outpoint corresponding to a transaction that did not make it into the
+     * block, calculate the cost of bumping those transactions (and their
+     * ancestors) to the target feerate.
+     */
     std::map<COutPoint, CAmount> CalculateBumpFees(const CFeeRate& target_feerate);
 
-    /** Construct a new block template and, calculate the cost of bumping all transactions that did
-     * not make it into the block to the target feerate. */
+    /**
+     * Construct a new block template and calculate the cost of bumping all
+     * transactions that did not make it into the block to the target feerate,
+     * being careful to count any shared ancestors only once.
+     */
     CAmount CalculateTotalBumpFees(const CFeeRate& target_feerate);
 };
 } // namespace node

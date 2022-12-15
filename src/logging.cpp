@@ -286,6 +286,8 @@ std::string LogCategoryToStr(BCLog::LogFlags category)
         return "txreconciliation";
     case BCLog::LogFlags::SCAN:
         return "scan";
+    case BCLog::LogFlags::MINIMINER:
+        return "miniminer";
     case BCLog::LogFlags::ALL:
         return "all";
     }
