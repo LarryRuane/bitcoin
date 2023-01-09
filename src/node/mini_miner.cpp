@@ -22,7 +22,7 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
     : m_requested_outpoints(outpoints)
 {
     // Topological sort: unordered list of transactions with zero parents.
-    std::vector<tx_index_t> zero_in_degree;
+    std::vector<Tx*> zero_in_degree;
     {
         LOCK(mempool.cs);
 
@@ -61,6 +61,7 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
             }
             tx_index_t tx_index{m_tx_map[hash]};
             Tx& tx{m_tx_vec[tx_index]};
+            tx.m_index = tx_index;
             tx.m_fee = txiter->GetModifiedFee();
             tx.m_vsize = txiter->GetTxSize();
             LogPrint(BCLog::MINIMINER, "tx %i %s fee=%i vsize=%d\n", tx_index, hash.ToString(), tx.m_fee, tx.m_vsize);
@@ -71,7 +72,7 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
             const uint256& hash{txiter->GetTx().GetHash()};
             LogPrint(BCLog::MINIMINER, "cluster tx %i", m_tx_map[hash]);
             const tx_index_t tx_index{m_tx_map[hash]};
-            auto& tx{m_tx_vec[tx_index]};
+            Tx& tx{m_tx_vec[tx_index]};
 
             // set this transaction's children list
             {
@@ -80,7 +81,7 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
                 for (const auto child : children) {
                     tx_index_t child_tx_index{m_tx_map[child.get().GetTx().GetHash()]};
                     LogPrint(BCLog::MINIMINER, " %i", child_tx_index);
-                    tx.m_children.push_back(child_tx_index);
+                    tx.m_children.push_back(&m_tx_vec[child_tx_index]);
                 }
             }
 
@@ -90,14 +91,14 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
                 const auto& parents = txiter->GetMemPoolParentsConst();
                 for (const auto parent : parents) {
                     tx_index_t parent_tx_index{m_tx_map[parent.get().GetTx().GetHash()]};
-                    LogPrint(BCLog::MINIMINER, "  %i", parent_tx_index);
-                    tx.m_parents.push_back(parent_tx_index);
+                    LogPrint(BCLog::MINIMINER, " %i", parent_tx_index);
+                    tx.m_parents.push_back(&m_tx_vec[parent_tx_index]);
                 }
                 LogPrint(BCLog::MINIMINER, "\n");
 
                 // for topological sort
                 tx.m_in_degree = parents.size();
-                if (tx.m_in_degree == 0) zero_in_degree.push_back(tx_index);
+                if (tx.m_in_degree == 0) zero_in_degree.push_back(&tx);
             }
         }
     }
@@ -105,19 +106,46 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
     // topological sort, m_top_sort lists ancestors then descendants
     LogPrint(BCLog::MINIMINER, "topsort:");
     while (!zero_in_degree.empty()) {
-        const tx_index_t next{zero_in_degree.back()};
+        Tx* tx{zero_in_degree.back()};
         zero_in_degree.pop_back();
-        m_top_sort.push_back(next);
-        LogPrint(BCLog::MINIMINER, " %i", next);
-        const Tx& tx{m_tx_vec[next]};
-        for (tx_index_t child_index : tx.m_children) {
-            Tx& child{m_tx_vec[child_index]};
-            Assume(child.m_in_degree > 0);
-            if (--child.m_in_degree == 0) zero_in_degree.push_back(child_index);
+        m_top_sort.push_back(tx);
+        LogPrint(BCLog::MINIMINER, " %i", tx->m_index);
+        for (Tx* child : tx->m_children) {
+            Assume(child->m_in_degree > 0);
+            if (--child->m_in_degree <= 0) zero_in_degree.push_back(child);
         }
     }
     LogPrint(BCLog::MINIMINER, "\n");
     Assume(m_top_sort.size() == m_tx_vec.size());
+}
+
+/**
+ * (Re-)calculate the given transaction's ancestor values (fee and vsize),
+ * for performance, calculate only once (per mining step). Be sure to
+ * increment m_ltime whenever ancestor fees might have changed.
+ */
+void MiniMiner::calculateAncestorValues(Tx* tx)
+{
+    ++m_calc_ltime;
+    std::vector<Tx*> ancestors;
+    std::vector<Tx*> todo{tx};
+    while (!todo.empty()) {
+        Tx* atx = todo.back();
+        todo.pop_back();
+        if (atx->m_mined || atx->m_calc_ltime == m_calc_ltime) continue;
+        atx->m_calc_ltime = m_calc_ltime;
+        ancestors.push_back(atx);
+        for (Tx* parent : atx->m_parents) {
+            if (parent->m_mined || parent->m_calc_ltime == m_calc_ltime) continue;
+            todo.push_back(parent);
+        }
+    }
+    tx->m_ancestor_fee = 0;
+    tx->m_ancestor_vsize = 0;
+    for (Tx* atx : ancestors) {
+        tx->m_ancestor_fee += atx->m_fee;
+        tx->m_ancestor_vsize += atx->m_vsize;
+    }
 }
 
 /**
@@ -200,64 +228,90 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
  * so those are another result of this algorithm, in addition
  * to the m_mined flags.
  */
+
 void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
 {
     // reset the state to as it was after the constructor ran.
-    for (Tx& tx : m_tx_vec) tx.m_mined = false;
+    ++m_mine_ltime;
+    for (Tx& tx : m_tx_vec) {
+        tx.m_mined = false;
+        calculateAncestorValues(&tx);
+    }
 
     bool progress{true};
     while (progress) {
         progress = false;
-        LogPrint(BCLog::MINIMINER, "start topological loop\n");
-        for (tx_index_t tx_index : m_top_sort) {
-            Tx& tx{m_tx_vec[tx_index]};
-            if (tx.m_mined) continue;
-
-            // recompute this tx's ancestor fee and size (includes our own)
-            tx.m_ancestor_fee = tx.m_fee;
-            tx.m_ancestor_vsize = tx.m_vsize;
-            for (tx_index_t parent_index : tx.m_parents) {
-                const Tx& parent{m_tx_vec[parent_index]};
-                if (parent.m_mined) continue;
-                tx.m_ancestor_fee += parent.m_ancestor_fee;
-                tx.m_ancestor_vsize += parent.m_ancestor_vsize;
+        LogPrint(BCLog::MINIMINER, "start BuildMockTemplate target_feerate:%s\n",
+            target_feerate.ToString());
+        for (Tx* tx : m_top_sort) {
+            LogPrint(BCLog::MINIMINER, "tx %i mined:%d af:%i as:%i\n",
+                tx->m_index, tx->m_mined, tx->m_ancestor_fee, tx->m_ancestor_vsize);
+            if (tx->m_mined) continue;
+            CFeeRate afeerate(tx->m_ancestor_fee, tx->m_ancestor_vsize);
+            if (false) {
+                // feerate should be up-to-date; this is an expensive test
+                CAmount save_fee{tx->m_ancestor_fee};
+                auto save_vsize{tx->m_ancestor_vsize};
+                calculateAncestorValues(tx);
+                assert(tx->m_ancestor_fee == save_fee);
+                assert(tx->m_ancestor_vsize == save_vsize);
             }
-            CFeeRate afeerate(tx.m_ancestor_fee, tx.m_ancestor_vsize);
-            LogPrint(BCLog::MINIMINER, "tx %i afeerate:%i afee:%i avsize:%i\n", tx_index,
-                     afeerate.GetFeePerK(), tx.m_ancestor_fee, tx.m_ancestor_vsize);
-
-            if (afeerate >= target_feerate) {
+            if (afeerate < target_feerate) continue;
                 // "mine" this tx and all of its (unmined) ancestors
-                progress = true;
-                LogPrint(BCLog::MINIMINER, "tx %i mined:", tx_index);
-                std::vector<tx_index_t> to_mine({tx_index});
-                while (!to_mine.empty()) {
-                    const tx_index_t next{to_mine.back()};
-                    to_mine.pop_back();
-                    Tx& tx_to_mine{m_tx_vec[next]};
-                    if (tx_to_mine.m_mined) continue;
-
-                    // Mine this transaction, and schedule all of
-                    // its ancestors to be mined too.
-                    tx_to_mine.m_mined = true;
-                    LogPrint(BCLog::MINIMINER, " %i", next);
-                    for (tx_index_t parent_index : tx_to_mine.m_parents) {
-                        const Tx& parent{m_tx_vec[parent_index]};
-                        if (!parent.m_mined) to_mine.push_back(parent_index);
+            progress = true;
+            ++m_mine_ltime;
+            std::vector<Tx*> recalc_todo;
+            std::vector<Tx*> mine_todo{tx};
+            while (!mine_todo.empty()) {
+                Tx* atx = mine_todo.back();
+                mine_todo.pop_back();
+                if (atx->m_mined) continue;
+                atx->m_mined = true;
+                LogPrint(BCLog::MINIMINER, "  atx %i mined:%d af:%i as:%i\n",
+                    atx->m_index, atx->m_mined, atx->m_ancestor_fee, atx->m_ancestor_vsize);
+                for (Tx* parent : atx->m_parents) {
+                    LogPrint(BCLog::MINIMINER, "    parent %i mined:%d af:%i as:%i\n",
+                        parent->m_index, parent->m_mined,
+                        parent->m_ancestor_fee, parent->m_ancestor_vsize);
+                    if (parent->m_mined) continue;
+                    mine_todo.push_back(parent);
+                }
+                // ensure that we recalculate this child only one time
+                for (Tx* child : atx->m_children) {
+                    if (!child->m_mined && child->m_child_ltime != m_mine_ltime) {
+                        child->m_child_ltime = m_mine_ltime;
+                        recalc_todo.push_back(child);
                     }
                 }
-                LogPrint(BCLog::MINIMINER, "\n");
-                // Restart the top-sort loop because previous
-                // ancestor fees and sizes may now be stale.
-                break;
             }
+            // recalculate the ancestor values of decendants of selected transactions
+            while (!recalc_todo.empty()) {
+                Tx* recalc_tx{recalc_todo.back()};
+                recalc_todo.pop_back();
+                LogPrint(BCLog::MINIMINER, "    recalc %i mined:%d af:%i as:%i\n",
+                    recalc_tx->m_index, recalc_tx->m_mined,
+                    recalc_tx->m_ancestor_fee, recalc_tx->m_ancestor_vsize);
+                calculateAncestorValues(recalc_tx);
+                LogPrint(BCLog::MINIMINER, "    after recalc %i mined:%d af:%i as:%i\n",
+                    recalc_tx->m_index, recalc_tx->m_mined,
+                    recalc_tx->m_ancestor_fee, recalc_tx->m_ancestor_vsize);
+                for (Tx* child : recalc_tx->m_children) {
+                    if (child->m_child_ltime != m_mine_ltime) {
+                        child->m_child_ltime = m_mine_ltime;
+                        recalc_todo.push_back(child);
+                    }
+                }
+            }
+            // Restart the loop because ancestor fees and sizes may have changed.
+            break;
         }
     }
 }
 
 std::map<COutPoint, CAmount> MiniMiner::CalculateBumpFees(const CFeeRate& target_feerate)
 {
-    LogPrint(BCLog::MINIMINER, "target_feerate:%i\n", target_feerate.GetFeePerK());
+    LogPrint(BCLog::MINIMINER, "CalculateBumpFees target_feerate:%i\n",
+        target_feerate.GetFeePerK());
     // Build a block template of all transaction packages at or above target_feerate.
     BuildMockTemplate(target_feerate);
 
@@ -266,12 +320,14 @@ std::map<COutPoint, CAmount> MiniMiner::CalculateBumpFees(const CFeeRate& target
         const auto& it{m_tx_map.find(requested_outpoint.hash)};
         if (it == m_tx_map.end()) {
             // this outpoint wasn't found in the mempool
+            LogPrint(BCLog::MINIMINER, "not in mempool %s\n", requested_outpoint.hash.ToString());
             bump_fees.emplace(requested_outpoint, 0);
             continue;
         }
         Tx& tx{m_tx_vec[it->second]};
         if (tx.m_mined) {
             // "mined" transactions don't need to have their fee bumped
+            LogPrint(BCLog::MINIMINER, "mined %i\n", tx.m_index);
             bump_fees.emplace(requested_outpoint, 0);
             continue;
         }
@@ -279,7 +335,7 @@ std::map<COutPoint, CAmount> MiniMiner::CalculateBumpFees(const CFeeRate& target
         Assume(target_fee > tx.m_ancestor_fee);
         CAmount bump_fee{target_fee - tx.m_ancestor_fee};
         bump_fees.emplace(requested_outpoint, bump_fee);
-        LogPrint(BCLog::MINIMINER, "tx %i bump:%i\n", bump_fee);
+        LogPrint(BCLog::MINIMINER, "tx %i bump:%i\n", tx.m_index, bump_fee);
     }
     return bump_fees;
 }
@@ -293,7 +349,7 @@ CAmount MiniMiner::CalculateTotalBumpFees(const CFeeRate& target_feerate)
     // Sum the individual tx fees and sizes of non-mined transactions.
     CAmount total_fees{0};
     CAmount total_vsize{0};
-    std::vector<tx_index_t> todo;
+    std::vector<Tx*> todo;
     for (const auto& requested_outpoint : m_requested_outpoints) {
         const auto& it{m_tx_map.find(requested_outpoint.hash)};
         if (it == m_tx_map.end()) {
@@ -301,21 +357,19 @@ CAmount MiniMiner::CalculateTotalBumpFees(const CFeeRate& target_feerate)
             continue;
         }
         tx_index_t tx_index{it->second};
-        Tx& tx{m_tx_vec[tx_index]};
-        if (tx.m_mined) continue;
-        tx.m_mined = true;
-        todo.push_back(tx_index);
+        Tx* tx{&m_tx_vec[tx_index]};
+        if (tx->m_mined) continue;
+        tx->m_mined = true;
+        todo.push_back(tx);
     }
     while (!todo.empty()) {
-        tx_index_t next{todo.back()};
+        Tx* tx{todo.back()};
         todo.pop_back();
-        Tx& tx{m_tx_vec[next]};
-        total_fees += tx.m_fee;
-        total_vsize += tx.m_vsize;
-        tx.m_mined = true;
-        for (tx_index_t parent_index : tx.m_parents) {
-            const Tx& parent{m_tx_vec[parent_index]};
-            if (!parent.m_mined) todo.push_back(parent_index);
+        total_fees += tx->m_fee;
+        total_vsize += tx->m_vsize;
+        tx->m_mined = true;
+        for (Tx* parent : tx->m_parents) {
+            if (!parent->m_mined) todo.push_back(parent);
         }
     }
     CAmount target_fee = target_feerate.GetFee(total_vsize);

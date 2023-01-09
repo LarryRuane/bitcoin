@@ -18,31 +18,47 @@ class MiniMiner
     //! Copy of the original outpoints requested.
     std::vector<COutPoint> m_requested_outpoints;
 
+    //! Index into `m_tx_vec`
+    using tx_index_t = size_t;
+
     /*
      * A very simplified representation of a mempool transaction.
      */
     struct Tx {
+        tx_index_t m_index;
         int m_in_degree{0};             //! only for topological sort
         bool m_mined{false};            //! this transaction has been "mined"
-        std::vector<size_t> m_parents;  //! references to our parents (unordered)
-        std::vector<size_t> m_children; //! references to our children (unordered)
+        int64_t m_child_ltime{0};       //! when recalculated ancestor values
+        int64_t m_calc_ltime{0};       //! when recalculated ancestor values
+        std::vector<Tx*> m_parents;     //! our parents (unordered)
+        std::vector<Tx*> m_children;    //! our children (unordered)
         CAmount m_fee{0};               //! fee of this individual transaction
-        uint32_t m_vsize{0};            //! virtual size of this individual transaction
         CAmount m_ancestor_fee{0};      //! sum of our fee and all our ancestors
+        uint32_t m_vsize{0};            //! virtual size of this individual transaction
         uint32_t m_ancestor_vsize{0};   //! sum of our vsize and all our ancestors
     };
 
-    //! Index into `m_tx_vec`
-    using tx_index_t = size_t;
+    //! bumped every time a package of transactions is mined, invalidating ancestor values
+    int64_t m_mine_ltime{0};
+
+    //! bumped each time calculateAncestorValues() is called, for generating
+    //! a unique ancestor list
+    int64_t m_calc_ltime{0};
 
     //! Transactions in the order encountered; the order is arbitrary.
     std::vector<Tx> m_tx_vec;
 
     //! Return a transaction's index into m_tx_vec, given its txid (hash).
+    //! This contains indices (into m_tx_vec) instead of Tx pointers
+    //! because it's set up at the same time as m_tx_vec, and pushing to a
+    //! vector can reallocate its memory, invaliding pointers into it.
     std::map<uint256, tx_index_t> m_tx_map;
 
-    //! References to transactions in topologically-sorted order, ancestors first.
-    std::vector<tx_index_t> m_top_sort;
+    //! transactions in topologically-sorted order, ancestors first.
+    std::vector<Tx*> m_top_sort;
+
+    //! Calculate (recalculate) a transaction's ancestor fee and vsize
+    void calculateAncestorValues(Tx*);
 
     /**
      * Build a block template of transactions with ancestor feerates greater
