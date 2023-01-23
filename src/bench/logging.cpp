@@ -20,34 +20,50 @@ static void Logging(benchmark::Bench& bench, const std::vector<const char*>& ext
     bench.run([&] { log(); });
 }
 
+// The test framework currently enables all categories by default, but in case
+// that changes, we set -debug=category in the benchmarks below when we expect a
+// category to be logged.
+
 static void LogPrintLevelWithThreadNames(benchmark::Bench& bench)
 {
-    Logging(bench, {"-logthreadnames=1"}, [] { LogPrintLevel(BCLog::NET, BCLog::Level::Error, "%s\n", "test"); });
+    Logging(bench, {"-logthreadnames=1", "-debug=validation"}, [] {
+        LogPrintLevel(BCLog::VALIDATION, BCLog::Level::Error, "%s\n", "test");
+    });
 }
 
 static void LogPrintLevelWithoutThreadNames(benchmark::Bench& bench)
 {
-    Logging(bench, {"-logthreadnames=0"}, [] { LogPrintLevel(BCLog::NET, BCLog::Level::Error, "%s\n", "test"); });
+    Logging(bench, {"-logthreadnames=0", "-debug=validation"}, [] {
+        LogPrintLevel(BCLog::VALIDATION, BCLog::Level::Error, "%s\n", "test");
+    });
 }
 
 static void LogPrintWithCategory(benchmark::Bench& bench)
 {
-    Logging(bench, {"-logthreadnames=0", "-debug=net"}, [] { LogPrint(BCLog::NET, "%s\n", "test"); });
+    Logging(bench, {"-logthreadnames=0", "-debug=validation"}, [] {
+        LogPrint(BCLog::VALIDATION, "%s\n", "test");
+    });
 }
 
 static void LogPrintWithoutCategory(benchmark::Bench& bench)
 {
-    Logging(bench, {"-logthreadnames=0", "-debug=0"}, [] { LogPrint(BCLog::NET, "%s\n", "test"); });
+    Logging(bench, {"-logthreadnames=0", "-debug=0"}, [] {
+        LogPrint(BCLog::VALIDATION, "%s\n", "test");
+    });
 }
 
 static void LogPrintfCategoryWithThreadNames(benchmark::Bench& bench)
 {
-    Logging(bench, {"-logthreadnames=1"}, [] { LogPrintfCategory(BCLog::NET, "%s\n", "test"); });
+    Logging(bench, {"-logthreadnames=1", "-debug=validation"}, [] {
+        LogPrintfCategory(BCLog::VALIDATION, "%s\n", "test");
+    });
 }
 
 static void LogPrintfCategoryWithoutThreadNames(benchmark::Bench& bench)
 {
-    Logging(bench, {"-logthreadnames=0"}, [] { LogPrintfCategory(BCLog::NET, "%s\n", "test"); });
+    Logging(bench, {"-logthreadnames=0", "-debug=validation"}, [] {
+        LogPrintfCategory(BCLog::VALIDATION, "%s\n", "test");
+    });
 }
 
 static void LogPrintfWithThreadNames(benchmark::Bench& bench)
@@ -65,7 +81,7 @@ static void LogWithoutWriteToFile(benchmark::Bench& bench)
     // Disable writing the log to a file, as used for unit tests and fuzzing in `MakeNoLogFileContext`.
     Logging(bench, {"-nodebuglogfile", "-debug=1"}, [] {
         LogPrintf("%s\n", "test");
-        LogPrint(BCLog::NET, "%s\n", "test");
+        LogPrint(BCLog::VALIDATION, "%s\n", "test");
     });
 }
 
