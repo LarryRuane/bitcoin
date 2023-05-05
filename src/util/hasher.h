@@ -52,6 +52,22 @@ public:
     }
 };
 
+class LMRHasher
+{
+    /** Salt */
+    uint8_t salt[sizeof(size_t)];
+public:
+    LMRHasher(bool deterministic = false);
+    size_t operator()(const COutPoint& id) const noexcept {
+        uint64_t r{0};
+        for (int i = 0; i < 4; i++) {
+            r ^= id.hash.GetUint64(i);
+            r = (r << salt[i]) | (r >> (64-salt[i]));
+        }
+        return size_t(r + id.n);
+    }
+};
+
 struct FilterHeaderHasher
 {
     size_t operator()(const uint256& hash) const { return ReadLE64(hash.begin()); }

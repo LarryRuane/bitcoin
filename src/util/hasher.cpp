@@ -20,3 +20,9 @@ size_t SaltedSipHasher::operator()(const Span<const unsigned char>& script) cons
 {
     return CSipHasher(m_k0, m_k1).Write(script.data(), script.size()).Finalize();
 }
+
+LMRHasher::LMRHasher(bool deterministic) {
+    for (int i = 0; i < 4; i++) {
+        salt[i] = deterministic ? i : (GetRand<uint8_t>() & 63);
+    }
+}

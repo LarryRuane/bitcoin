@@ -34,7 +34,7 @@ size_t CCoinsViewBacked::EstimateSize() const { return base->EstimateSize(); }
 
 CCoinsViewCache::CCoinsViewCache(CCoinsView* baseIn, bool deterministic) :
     CCoinsViewBacked(baseIn), m_deterministic(deterministic),
-    cacheCoins(0, SaltedOutpointHasher(/*deterministic=*/deterministic))
+    cacheCoins(0, LMRHasher())
 {}
 
 size_t CCoinsViewCache::DynamicMemoryUsage() const {
@@ -314,7 +314,7 @@ void CCoinsViewCache::ReallocateCache()
     // Cache should be empty when we're calling this.
     assert(cacheCoins.size() == 0);
     cacheCoins.~CCoinsMap();
-    ::new (&cacheCoins) CCoinsMap(0, SaltedOutpointHasher(/*deterministic=*/m_deterministic));
+    ::new (&cacheCoins) CCoinsMap(0, LMRHasher());
 }
 
 void CCoinsViewCache::SanityCheck() const
