@@ -67,6 +67,10 @@ bool CCoinsViewCache::GetCoin(const COutPoint &outpoint, Coin &coin) const {
     return false;
 }
 
+// XXX shouldn't be global, probably
+uint64_t g_txo_count{0}; // counter increments for each txo added to dbcache
+std::vector<bool> g_flush; // 
+
 void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possible_overwrite) {
     assert(!coin.IsSpent());
     if (coin.out.scriptPubKey.IsUnspendable()) return;
@@ -98,6 +102,7 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
     }
     it->second.coin = std::move(coin);
     it->second.flags |= CCoinsCacheEntry::DIRTY | (fresh ? CCoinsCacheEntry::FRESH : 0);
+    it->second.txo_index = g_txo_count++;
     cachedCoinsUsage += it->second.coin.DynamicMemoryUsage();
     TRACE5(utxocache, add,
            outpoint.hash.data(),
@@ -105,6 +110,7 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
            (uint32_t)it->second.coin.nHeight,
            (int64_t)it->second.coin.out.nValue,
            (bool)it->second.coin.IsCoinBase());
+    if(0) LogPrint(BCLog::COINDB, "LMR ac %s,%i\n", outpoint.hash.ToString(), outpoint.n);
 }
 
 void CCoinsViewCache::EmplaceCoinInternalDANGER(COutPoint&& outpoint, Coin&& coin) {

@@ -105,6 +105,7 @@ struct CCoinsCacheEntry
 {
     Coin coin; // The actual cached data.
     unsigned char flags;
+    uint64_t txo_index;
 
     enum Flags {
         /**
@@ -224,6 +225,9 @@ public:
     size_t EstimateSize() const override;
 };
 
+// XXX put these in a better place than global
+extern uint64_t g_txo_count;
+extern std::vector<bool> g_flush;
 
 /** CCoinsView that adds a memory cache for transactions to another CCoinsView */
 class CCoinsViewCache : public CCoinsViewBacked

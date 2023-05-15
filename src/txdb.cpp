@@ -136,12 +136,22 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, boo
     batch.Write(DB_HEAD_BLOCKS, Vector(hashBlock, old_tip));
 
     for (CCoinsMap::iterator it = mapCoins.begin(); it != mapCoins.end();) {
-        if (it->second.flags & CCoinsCacheEntry::DIRTY) {
+        const CCoinsCacheEntry& cce{it->second};
+        if (cce.flags & CCoinsCacheEntry::DIRTY) {
             CoinEntry entry(&it->first);
-            if (it->second.coin.IsSpent())
+            if (cce.coin.IsSpent())
                 batch.Erase(entry);
-            else
-                batch.Write(entry, it->second.coin);
+            else {
+                batch.Write(entry, cce.coin);
+                // maybe should not do this if the txo_index is close to txo_count
+                if (g_txo_count-cce.txo_index > 10000) {
+                    if (cce.txo_index+1 > g_flush.size()) {
+                        g_flush.insert(g_flush.end(), cce.txo_index+1 - g_flush.size(), false);
+                    }
+                    g_flush[cce.txo_index] = true;
+                }
+                if(0) LogPrint(BCLog::COINDB, "LMRUTXO %s,%i\n", entry.outpoint->hash.ToString(), entry.outpoint->n);
+            }
             changed++;
         }
         count++;
