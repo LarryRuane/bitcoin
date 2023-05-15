@@ -209,6 +209,7 @@ bool CCoinsViewCache::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlockIn
                 } else {
                     entry.coin = it->second.coin;
                 }
+                entry.txo_index = it->second.txo_index;
                 cachedCoinsUsage += entry.coin.DynamicMemoryUsage();
                 entry.flags = CCoinsCacheEntry::DIRTY;
                 // We can mark it FRESH in the parent if it was FRESH in the child

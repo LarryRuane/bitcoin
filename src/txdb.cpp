@@ -150,7 +150,9 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, boo
                     }
                     g_flush[cce.txo_index] = true;
                 }
-                if(0) LogPrint(BCLog::COINDB, "LMRUTXO %s,%i\n", entry.outpoint->hash.ToString(), entry.outpoint->n);
+                if(cce.txo_index == 0) {
+                    LogPrint(BCLog::COINDB, "LMRFIRST %s,%i\n", entry.outpoint->hash.ToString(), entry.outpoint->n);
+                }
             }
             changed++;
         }
@@ -169,6 +171,20 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, boo
             }
         }
     }
+    std::string s;
+    for (size_t i = 0; i < g_flush.size(); ++i) {
+        if (!s.empty() && (i % 128) == 0) {
+            LogPrint(BCLog::COINDB, "LMR %s\n", s);
+            s = "";
+        }
+        // XXX LMR this should be changed to write hex string (probably 64 chars)
+        s += g_flush[i] ? 'F' : '.';
+    }
+    if (!s.empty()) {
+        LogPrint(BCLog::COINDB, "LMR %s\n", s);
+    }
+    g_flush.clear();
+    g_txo_count = 0;
 
     // In the last batch, mark the database as consistent with hashBlock again.
     batch.Erase(DB_HEAD_BLOCKS);
