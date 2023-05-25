@@ -2560,10 +2560,13 @@ bool Chainstate::FlushStateToDisk(
                 return AbortNode(state, "Disk space is too low!", _("Disk space is too low!"));
             }
             // Flush the chainstate (which may refer to block index entries).
-            if (!CoinsTip().Flush())
+            bool partial_ok{fCacheCritical};
+            if (!CoinsTip().Flush(partial_ok))
                 return AbortNode(state, "Failed to write to coin database");
-            m_last_flush = nNow;
-            full_flush_completed = true;
+            if (CoinsTip().empty()) {
+                m_last_flush = nNow;
+                full_flush_completed = true;
+            }
             TRACE5(utxocache, flush,
                    int64_t{Ticks<std::chrono::microseconds>(SteadyClock::now() - nNow)},
                    (uint32_t)mode,
@@ -2856,7 +2859,7 @@ bool Chainstate::ConnectTip(BlockValidationState& state, CBlockIndex* pindexNew,
                  Ticks<MillisecondsDouble>(time_3 - time_2),
                  Ticks<SecondsDouble>(time_connect_total),
                  Ticks<MillisecondsDouble>(time_connect_total) / num_blocks_total);
-        bool flushed = view.Flush();
+        bool flushed = view.Flush(); // LMR perf: this reallocates the cache CCoinsViewCache::Flush()
         assert(flushed);
     }
     const auto time_4{SteadyClock::now()};

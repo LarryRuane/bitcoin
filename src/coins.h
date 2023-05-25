@@ -125,6 +125,8 @@ struct CCoinsCacheEntry
          * when this cache is flushed.
          */
         FRESH = (1 << 1),
+
+        FLUSH = (1 << 2),
     };
 
     CCoinsCacheEntry() : flags(0) {}
@@ -193,7 +195,7 @@ public:
 
     //! Do a bulk modification (multiple Coin changes + BestBlock change).
     //! The passed mapCoins can be modified.
-    virtual bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, bool erase = true);
+    virtual bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, bool erase = true, bool partial = false);
 
     //! Get a cursor to iterate over the whole state
     virtual std::unique_ptr<CCoinsViewCursor> Cursor() const;
@@ -219,7 +221,7 @@ public:
     uint256 GetBestBlock() const override;
     std::vector<uint256> GetHeadBlocks() const override;
     void SetBackend(CCoinsView &viewIn);
-    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, bool erase = true) override;
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, bool erase = true, bool partial = false) override;
     std::unique_ptr<CCoinsViewCursor> Cursor() const override;
     size_t EstimateSize() const override;
 };
@@ -243,6 +245,10 @@ protected:
     /* Cached dynamic memory usage for the inner Coin objects. */
     mutable size_t cachedCoinsUsage{0};
 
+    /* The number of cacheCoins entries marked as FLUSH (expidite sending to disk). */
+    mutable size_t flush_count{0};
+    mutable size_t flush_coins_usage{0};
+
 public:
     CCoinsViewCache(CCoinsView *baseIn, bool deterministic = false);
 
@@ -256,7 +262,7 @@ public:
     bool HaveCoin(const COutPoint &outpoint) const override;
     uint256 GetBestBlock() const override;
     void SetBestBlock(const uint256 &hashBlock);
-    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, bool erase = true) override;
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, bool erase = true, bool partial = false) override;
     std::unique_ptr<CCoinsViewCursor> Cursor() const override {
         throw std::logic_error("CCoinsViewCache cursor iteration not supported.");
     }
@@ -308,7 +314,7 @@ public:
      * to be forgotten.
      * If false is returned, the state of this cache (and its backing view) will be undefined.
      */
-    bool Flush();
+    bool Flush(bool partial_ok = false);
 
     /**
      * Push the modifications applied to this cache to its base while retaining
@@ -340,6 +346,11 @@ public:
     //!
     //! See: https://stackoverflow.com/questions/42114044/how-to-release-unordered-map-memory
     void ReallocateCache();
+
+    void MemoryAdd(const CCoinsCacheEntry& entry) const;
+    void MemorySub(const CCoinsCacheEntry& entry) const;
+
+    bool empty() const { return cacheCoins.size() == 0; }
 
     //! Run an internal sanity check on the cache data structure. */
     void SanityCheck() const;

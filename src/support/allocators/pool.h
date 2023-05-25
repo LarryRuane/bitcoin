@@ -118,6 +118,11 @@ class PoolResource final
      * whenever it is accessed, but `m_available_memory_end` caches this for clarity and efficiency.
      */
     std::byte* m_available_memory_end = nullptr;
+    
+    /**
+     * How many bytes are allocated by callers
+     */
+    const size_t m_alloc_bytes{0};
 
     /**
      * How many multiple of ELEM_ALIGN_BYTES are necessary to fit bytes. We use that result directly as an index
@@ -211,6 +216,7 @@ public:
      */
     void* Allocate(std::size_t bytes, std::size_t alignment)
     {
+        m_alloc_bytes += bytes;
         if (IsFreeListUsable(bytes, alignment)) {
             const std::size_t num_alignments = NumElemAlignBytes(bytes);
             if (nullptr != m_free_lists[num_alignments]) {
@@ -240,6 +246,8 @@ public:
      */
     void Deallocate(void* p, std::size_t bytes, std::size_t alignment) noexcept
     {
+        assert(m_alloc_bytes >= bytes);
+        m_alloc_bytes -= bytes;
         if (IsFreeListUsable(bytes, alignment)) {
             const std::size_t num_alignments = NumElemAlignBytes(bytes);
             // put the memory block into the linked list. We can placement construct the FreeList
