@@ -122,7 +122,7 @@ class PoolResource final
     /**
      * How many bytes are allocated by callers
      */
-    const size_t m_alloc_bytes{0};
+    size_t m_alloc_bytes{0};
 
     /**
      * How many multiple of ELEM_ALIGN_BYTES are necessary to fit bytes. We use that result directly as an index
@@ -273,6 +273,14 @@ public:
     [[nodiscard]] size_t ChunkSizeBytes() const
     {
         return m_chunk_size_bytes;
+    }
+
+    /**
+     * Size in bytes to allocate per chunk, currently hardcoded to a fixed size.
+     */
+    [[nodiscard]] size_t UserAllocBytes() const
+    {
+        return m_alloc_bytes;
     }
 };
 
