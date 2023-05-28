@@ -147,10 +147,12 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, boo
                 changed++;
             } else if (!partial || (it->second.flags & CCoinsCacheEntry::FLUSH)) {
                 batch.Write(entry, it->second.coin);
+                LogPrint(BCLog::COINDB, "LMR f %s %i\n", entry.outpoint->hash.ToString(), entry.outpoint->n);
                 changed++;
             } else {
                 // keep this non-FLUSH entry in the cache
                 keep = true;
+                LogPrint(BCLog::COINDB, "LMR k %s %i\n", entry.outpoint->hash.ToString(), entry.outpoint->n);
             }
         }
         count++;

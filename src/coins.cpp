@@ -134,7 +134,7 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
     static uint8_t flushbits;
     if (!tried_open_flushbits) {
         tried_open_flushbits = true;
-        flushbits_fd = fopen("/sd/bitvector-bin", "rb");
+        flushbits_fd = fopen("/ext/linux-share/bitvector-bin", "rb");
     }
     if (flushbits_fd) {
         if (bitmask == 0x100) {
