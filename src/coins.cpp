@@ -130,15 +130,15 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
            (bool)it->second.coin.IsCoinBase());
     static bool tried_open_flushbits{false};
     static FILE* flushbits_fd;
-    static int bitmask{0x100};
+    static int bitmask{0};
     static uint8_t flushbits;
     if (!tried_open_flushbits) {
         tried_open_flushbits = true;
         flushbits_fd = fopen("/ext/linux-share/bitvector-bin", "rb");
     }
     if (flushbits_fd) {
-        if (bitmask == 0x100) {
-            bitmask = 1;
+        if (bitmask == 0) {
+            bitmask = 0x80;
             if (!fread(&flushbits, 1, 1, flushbits_fd)) {
                 // probably reached end of file, that's okay
                 flushbits = 0;
@@ -148,7 +148,7 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
         }
         // based on the historical record...
         if (flushbits & bitmask) it->second.flags |= CCoinsCacheEntry::FLUSH;
-        bitmask <<= 1;
+        bitmask >>= 1;
     }
     MemoryAdd(it->second);
 }
