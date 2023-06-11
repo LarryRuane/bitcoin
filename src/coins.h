@@ -103,7 +103,15 @@ public:
  */
 struct CCoinsCacheEntry
 {
-    Coin coin; // The actual cached data.
+    // Coin {
+    // CTxOut {
+    CAmount nValue;
+    std::vector<unsigned char> scriptPubKey;
+    // }
+    unsigned int fCoinbase : 1;
+    uint32_t nHeight : 31;
+    // }
+
     unsigned char flags;
 
     enum Flags {
@@ -128,8 +136,27 @@ struct CCoinsCacheEntry
     };
 
     CCoinsCacheEntry() : flags(0) {}
-    explicit CCoinsCacheEntry(Coin&& coin_) : coin(std::move(coin_)), flags(0) {}
-    CCoinsCacheEntry(Coin&& coin_, unsigned char flag) : coin(std::move(coin_)), flags(flag) {}
+    explicit CCoinsCacheEntry(Coin&& coin_)
+        : nValue(coin_.out.nValue),
+          scriptPubKey(coin_.out.scriptPubKey),
+          fCoinbase(coin_.fCoinBase),
+          nHeight(coin_.nHeight),
+          flags(0)
+    {
+    }
+    CCoinsCacheEntry(Coin&& coin_, unsigned char flag)
+        : nValue(coin_.out.nValue),
+          scriptPubKey(coin_.out.scriptPubKey),
+          fCoinbase(coin_.fCoinBase),
+          nHeight(coin_.nHeight),
+          flags(flag)
+    {
+    }
+
+    bool IsSpent() const
+    {
+        return nValue == -1;
+    }
 };
 
 /**
