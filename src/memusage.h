@@ -49,15 +49,12 @@ template<typename X> static inline size_t DynamicUsage(const X * const &v) { ret
 
 static inline size_t MallocUsage(size_t alloc)
 {
-    // Measured on libc6 2.19 on Linux.
-    if (alloc == 0) {
-        return 0;
-    } else if (sizeof(void*) == 8) {
-        return ((alloc + 31) >> 4) << 4;
-    } else if (sizeof(void*) == 4) {
-        return ((alloc + 15) >> 3) << 3;
+    // Determined experimentally GCC 12.2.0, glibc 2.37, x86_64 and i686
+    static_assert(sizeof(void*) == 8 || sizeof(void*) == 4);
+    if (sizeof(void*) == 8) {
+        return std::max<size_t>(32, (alloc+23) & ~15);
     } else {
-        assert(0);
+        return (alloc+19) & ~15;
     }
 }
 
