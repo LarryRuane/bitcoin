@@ -258,6 +258,7 @@ BOOST_FIXTURE_TEST_CASE(importmulti_rescan, TestChain100Setup)
         request.context = &context;
         request.params.setArray();
         request.params.push_back(keys);
+        request.m_wallet_restriction = "";
 
         UniValue response = importmulti().HandleRequest(request);
         BOOST_CHECK_EQUAL(response.write(),
