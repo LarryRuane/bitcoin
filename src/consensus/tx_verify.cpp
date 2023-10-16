@@ -135,7 +135,7 @@ unsigned int GetP2SHSigOpCount(const CTransaction& tx, const CCoinsViewCache& in
     unsigned int nSigOps = 0;
     for (unsigned int i = 0; i < tx.vin.size(); i++)
     {
-        const Coin& coin = inputs.AccessCoin(tx.vin[i].prevout);
+        const Coin& coin = inputs.GetTxInputCoinCache(tx.vin[i].prevout, i);
         assert(!coin.IsSpent());
         const CTxOut &prevout = coin.out;
         if (prevout.scriptPubKey.IsPayToScriptHash())
@@ -157,7 +157,7 @@ int64_t GetTransactionSigOpCost(const CTransaction& tx, const CCoinsViewCache& i
 
     for (unsigned int i = 0; i < tx.vin.size(); i++)
     {
-        const Coin& coin = inputs.AccessCoin(tx.vin[i].prevout);
+        const Coin& coin = inputs.GetTxInputCoinCache(tx.vin[i].prevout, i);
         assert(!coin.IsSpent());
         const CTxOut &prevout = coin.out;
         nSigOps += CountWitnessSigOps(tx.vin[i].scriptSig, prevout.scriptPubKey, &tx.vin[i].scriptWitness, flags);
@@ -176,7 +176,7 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, TxValidationState& state, 
     CAmount nValueIn = 0;
     for (unsigned int i = 0; i < tx.vin.size(); ++i) {
         const COutPoint &prevout = tx.vin[i].prevout;
-        const Coin& coin = inputs.AccessCoin(prevout);
+        const Coin& coin{inputs.GetTxInputCoinCache(prevout, i)};
         assert(!coin.IsSpent());
 
         // If prev is coinbase, check that it's matured

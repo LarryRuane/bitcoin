@@ -243,6 +243,8 @@ protected:
     /* Cached dynamic memory usage for the inner Coin objects. */
     mutable size_t cachedCoinsUsage{0};
 
+    mutable std::vector<const Coin*> m_tx_inputs_cache;
+
 public:
     CCoinsViewCache(CCoinsView *baseIn, bool deterministic = false);
 
@@ -340,6 +342,21 @@ public:
     //!
     //! See: https://stackoverflow.com/questions/42114044/how-to-release-unordered-map-memory
     void ReallocateCache();
+
+    void LoadTxInputCoinsCache(const CTransaction& tx) const;
+    void ClearTxInputCoinsCache()
+    {
+        m_tx_inputs_cache.clear();
+    }
+    const Coin& GetTxInputCoinCache(const COutPoint& prevout, size_t i) const
+    {
+        if (m_tx_inputs_cache.empty()) return AccessCoin(prevout);
+        assert(i < m_tx_inputs_cache.size());
+#ifdef DEBUG
+        assert(m_tx_inputs_cache[i] == &AccessCoin(prevout));
+#endif
+        return *m_tx_inputs_cache[i];
+    }
 
     //! Run an internal sanity check on the cache data structure. */
     void SanityCheck() const;

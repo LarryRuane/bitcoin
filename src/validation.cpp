@@ -1880,9 +1880,8 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
         std::vector<CTxOut> spent_outputs;
         spent_outputs.reserve(tx.vin.size());
 
-        for (const auto& txin : tx.vin) {
-            const COutPoint& prevout = txin.prevout;
-            const Coin& coin = inputs.AccessCoin(prevout);
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            const Coin& coin = inputs.GetTxInputCoinCache(tx.vin[i].prevout, i);
             assert(!coin.IsSpent());
             spent_outputs.emplace_back(coin.out);
         }
@@ -2358,6 +2357,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
 
         if (!tx.IsCoinBase())
         {
+            view.LoadTxInputCoinsCache(tx);
             CAmount txfee = 0;
             TxValidationState tx_state;
             if (!Consensus::CheckTxInputs(tx, tx_state, view, pindex->nHeight, txfee)) {
@@ -2377,7 +2377,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             // be in ConnectBlock because they require the UTXO set
             prevheights.resize(tx.vin.size());
             for (size_t j = 0; j < tx.vin.size(); j++) {
-                prevheights[j] = view.AccessCoin(tx.vin[j].prevout).nHeight;
+                prevheights[j] = view.GetTxInputCoinCache(tx.vin[j].prevout, j).nHeight;
             }
 
             if (!SequenceLocks(tx, nLockTimeFlags, prevheights, *pindex)) {
@@ -2414,6 +2414,9 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         CTxUndo undoDummy;
         if (i > 0) {
             blockundo.vtxundo.emplace_back();
+        }
+        if (!tx.IsCoinBase()) {
+            view.ClearTxInputCoinsCache();
         }
         UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
     }

@@ -304,12 +304,29 @@ bool CCoinsViewCache::HaveInputs(const CTransaction& tx) const
 {
     if (!tx.IsCoinBase()) {
         for (unsigned int i = 0; i < tx.vin.size(); i++) {
-            if (!HaveCoin(tx.vin[i].prevout)) {
+            if (m_tx_inputs_cache.size() > 0) {
+                assert(i < m_tx_inputs_cache.size());
+#ifdef DEBUG
+                assert(m_tx_inputs_cache[i] == &AccessCoin(tx.vin[i].prevout));
+#endif
+                if (m_tx_inputs_cache[i]->IsSpent()) return false;
+            } else if (!HaveCoin(tx.vin[i].prevout)) {
                 return false;
             }
         }
     }
     return true;
+}
+
+void CCoinsViewCache::LoadTxInputCoinsCache(const CTransaction& tx) const
+{
+    //m_tx_inputs_cache.clear();
+    assert(m_tx_inputs_cache.empty());
+    m_tx_inputs_cache.resize(tx.vin.size());
+    for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        const Coin& coin{AccessCoin(tx.vin[i].prevout)};
+        m_tx_inputs_cache[i] = &coin;
+    }
 }
 
 void CCoinsViewCache::ReallocateCache()
