@@ -162,8 +162,8 @@ class PackageRBFTest(BitcoinTestFramework):
         self.log.info("Check replacement pays for incremental bandwidth")
         _, placeholder_txns3 = self.create_simple_package(coin)
         package_3_size = sum([tx.get_vsize() for tx in placeholder_txns3])
-        incremental_sats_required = (Decimal(package_3_size * 0.1) / COIN).quantize(Decimal("0.00000001"))
-        incremental_sats_short = incremental_sats_required - Decimal("0.00000005")
+        incremental_sats_required = (Decimal(package_3_size * 1) / COIN).quantize(Decimal("0.00000001"))
+        incremental_sats_short = incremental_sats_required - Decimal("0.00000001")
         # Recreate the package with slightly higher fee once we know the size of the new package, but still short of required fee
         failure_package_hex3, failure_package_txns3 = self.create_simple_package(coin, parent_fee=DEFAULT_FEE, child_fee=DEFAULT_CHILD_FEE + incremental_sats_short)
         assert_equal(package_3_size, sum([tx.get_vsize() for tx in failure_package_txns3]))
