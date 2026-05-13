@@ -208,9 +208,10 @@ void TestCoinsView(FuzzedDataProvider& fuzzed_data_provider, CCoinsViewCache& co
                 LIMITED_WHILE(good_data && fuzzed_data_provider.ConsumeBool(), 10'000)
                 {
                     CCoinsCacheEntry coins_cache_entry;
+                    Coin* coin;
                     if (fuzzed_data_provider.ConsumeBool()) {
-                        coins_cache_entry.coin = static_cast<Coin*>(resource.Allocate(sizeof(Coin), alignof(Coin)));
-                        new (coins_cache_entry.coin) Coin(random_coin);
+                        coin = static_cast<Coin*>(resource.Allocate(sizeof(Coin), alignof(Coin)));
+                        new (coin) Coin(random_coin);
                     } else {
                         const std::optional<Coin> opt_coin = ConsumeDeserializable<Coin>(fuzzed_data_provider);
                         if (!opt_coin) {
@@ -218,17 +219,19 @@ void TestCoinsView(FuzzedDataProvider& fuzzed_data_provider, CCoinsViewCache& co
                             freeCoins();
                             return;
                         }
-                        coins_cache_entry.coin = static_cast<Coin*>(resource.Allocate(sizeof(Coin), alignof(Coin)));
-                        new (coins_cache_entry.coin) Coin(*opt_coin);
+                        coin = static_cast<Coin*>(resource.Allocate(sizeof(Coin), alignof(Coin)));
+                        new (coin) Coin(*opt_coin);
                     }
                     // Avoid setting FRESH for an outpoint that already exists unspent in the parent view.
                     bool fresh{!coins_view_cache.PeekCoin(random_out_point) && fuzzed_data_provider.ConsumeBool()};
                     bool dirty{fresh || fuzzed_data_provider.ConsumeBool()};
+
+                    // Manually "move" the coin into the map entry (std::move doesn't move raw pointer targets)
                     auto it{coins_map.emplace(random_out_point, std::move(coins_cache_entry)).first};
+                    it->second.coin = coin;
                     if (dirty) CCoinsCacheEntry::SetDirty(*it, sentinel);
                     if (fresh) CCoinsCacheEntry::SetFresh(*it, sentinel);
                     dirty_count += dirty;
-                    if (coins_cache_entry.coin) freeCoinsEntry(coins_cache_entry);
                 }
                 auto cursor{CoinsViewCacheCursor(dirty_count, sentinel, coins_map, resource, /*will_clear=*/true)};
                 uint256 best_block{coins_view_cache.GetBestBlock()};

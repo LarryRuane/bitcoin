@@ -168,7 +168,6 @@ public:
     CCoinsCacheEntry() noexcept = default;
     ~CCoinsCacheEntry()
     {
-        while (coin);
         Assume(coin == nullptr);
         if (coin) coin->~Coin();
         SetClean();
