@@ -288,6 +288,10 @@ FUZZ_TARGET(coinscache_sim, .init = [] { static auto setup{MakeNoLogFileContext<
         if (caches.empty()) {
             caches.emplace_back(new CCoinsViewCache(&bottom, /*deterministic=*/true));
             fetch_scopes.emplace_back();
+            // Compact spent coins as aggressively as possible, so this fuzzer
+            // exercises compaction, the bloom filter, and shadowing against the
+            // simulated ground truth.
+            caches.back()->SetCompactSpentsThreshold(1);
             sim_caches[caches.size()].Wipe();
         }
         assert(caches.size() == fetch_scopes.size());
@@ -425,6 +429,7 @@ FUZZ_TARGET(coinscache_sim, .init = [] { static auto setup{MakeNoLogFileContext<
                         caches.emplace_back(new CoinsViewOverlay(&*caches.back(), g_thread_pool, /*deterministic=*/true));
                         fetch_scopes.emplace_back(make_fetch_scope());
                     }
+                    caches.back()->SetCompactSpentsThreshold(1);
                     // Apply to simulation data.
                     sim_caches[caches.size()].Wipe();
                 }
