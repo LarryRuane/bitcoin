@@ -96,7 +96,8 @@ public:
     }
 
     CCoinsMap& map() const { return cacheCoins; }
-    CoinsCachePair& sentinel() const { return m_sentinel; }
+    CoinsSentinel& sentinel() const { return m_sentinel; }
+    size_t& spent_count() const { return m_spent_count; }
     size_t& usage() const { return cachedCoinsUsage; }
     size_t& dirty() const { return m_dirty_count; }
 };
@@ -515,6 +516,7 @@ BOOST_FIXTURE_TEST_CASE(updatecoins_simulation_test, UpdateTest)
                 stack.push_back(std::make_unique<CCoinsViewCacheTest>(tip));
             }
         }
+        stack[0]->SanityCheck();
     }
 
     // Verify coverage.
@@ -632,14 +634,20 @@ static void SetCoinsValue(const CAmount value, Coin& coin)
     }
 }
 
-static size_t InsertCoinsMapEntry(CCoinsMap& map, CoinsCachePair& sentinel, const CoinEntry& cache_coin)
+static size_t InsertCoinsMapEntry(CCoinsMap& map, CoinsSentinel& sentinel, const CoinEntry& cache_coin)
 {
     CCoinsCacheEntry entry;
     SetCoinsValue(cache_coin.value, entry.coin);
     auto [iter, inserted] = map.emplace(OUTPOINT, std::move(entry));
     assert(inserted);
-    if (cache_coin.IsDirty()) CCoinsCacheEntry::SetDirty(*iter, sentinel);
-    if (cache_coin.IsFresh()) CCoinsCacheEntry::SetFresh(*iter, sentinel);
+    // Spent coins that are dirty belong on the spent list, matching the
+    // production invariant maintained by CCoinsViewCache::SetSpent(). The
+    // test-only states SPENT_CLEAN and SPENT_FRESH cannot occur in production
+    // and are deliberately kept off the spent list (and not counted).
+    const bool spent{cache_coin.value == SPENT && cache_coin.IsDirty()};
+    CoinsCachePair& list{spent ? sentinel.spent : sentinel.unspent};
+    if (cache_coin.IsDirty()) CCoinsCacheEntry::SetDirty(*iter, list);
+    if (cache_coin.IsFresh()) CCoinsCacheEntry::SetFresh(*iter, list);
     return iter->second.coin.DynamicMemoryUsage();
 }
 
@@ -655,8 +663,7 @@ static MaybeCoin GetCoinsMapEntry(const CCoinsMap& map, const COutPoint& outp = 
 
 static void WriteCoinsViewEntry(CCoinsView& view, const MaybeCoin& cache_coin)
 {
-    CoinsCachePair sentinel{};
-    sentinel.second.SelfRef(sentinel);
+    CoinsSentinel sentinel{};
     CCoinsMapMemoryResource resource;
     CCoinsMap map{0, CCoinsMap::hasher{}, CCoinsMap::key_equal{}, &resource};
     if (cache_coin) InsertCoinsMapEntry(map, sentinel, *cache_coin);
@@ -676,6 +683,7 @@ public:
         if (cache_coin) {
             cache.usage() += InsertCoinsMapEntry(cache.map(), cache.sentinel(), *cache_coin);
             cache.dirty() += cache_coin->IsDirty();
+            cache.spent_count() += cache_coin->value == SPENT && cache_coin->IsDirty();
         }
     }
 

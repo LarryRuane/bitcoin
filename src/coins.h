@@ -217,6 +217,9 @@ public:
         // Set sentinel to DIRTY so we can call Next on it
         m_flags = DIRTY;
     }
+
+    // Move the elements in source to the beginning of the destination; arguments are sentinals.
+    static void Merge(CoinsCachePair* source, CoinsCachePair* dest) noexcept;
 };
 
 /**
@@ -271,6 +274,7 @@ using CCoinsMap = std::unordered_map<COutPoint,
                                      PoolAllocator<CoinsCachePair,
                                                    sizeof(CoinsCachePair) + sizeof(void*) * 4>>;
 
+
 using CCoinsMapMemoryResource = CCoinsMap::allocator_type::ResourceType;
 
 /** Cursor for iterating over CoinsView state */
@@ -290,6 +294,20 @@ public:
     const uint256& GetBestBlock() const { return block_hash; }
 private:
     uint256 block_hash;
+};
+
+//! The sentinels of the two circular doubly-linked lists of flagged cache
+//! entries: unspent (DIRTY and/or FRESH) and spent (always DIRTY, never
+//! FRESH). Spent entries are kept on their own list so that they can be
+//! processed as a group without scanning the map. Grouped in one struct
+//! because the two lists are always passed around together.
+struct CoinsSentinel {
+    CoinsCachePair unspent;
+    CoinsCachePair spent;
+    CoinsSentinel() {
+        unspent.second.SelfRef(unspent);
+        spent.second.SelfRef(spent);
+    }
 };
 
 /**
@@ -315,13 +333,19 @@ struct CoinsViewCacheCursor
     //! Calling CCoinsMap::clear() afterwards is faster because a CoinsCachePair cannot be coerced back into a
     //! CCoinsMap::iterator to be erased, and must therefore be looked up again by key in the CCoinsMap before being erased.
     CoinsViewCacheCursor(size_t& dirty_count LIFETIMEBOUND,
-                         CoinsCachePair& sentinel LIFETIMEBOUND,
+                         CoinsSentinel& sentinel LIFETIMEBOUND,
                          CCoinsMap& map LIFETIMEBOUND,
                          bool will_erase) noexcept
         : m_dirty_count(dirty_count), m_sentinel(sentinel), m_map(map), m_will_erase(will_erase) {}
 
-    inline CoinsCachePair* Begin() const noexcept { return m_sentinel.second.Next(); }
-    inline CoinsCachePair* End() const noexcept { return &m_sentinel; }
+    inline CoinsCachePair* Begin() const noexcept {
+        // Combine the two lists so one iteration covers every flagged entry:
+        // move the spent list's entries onto the front of the unspent list,
+        // leaving the spent list empty.
+        CCoinsCacheEntry::Merge(&m_sentinel.spent, &m_sentinel.unspent);
+        return m_sentinel.unspent.second.Next();
+    }
+    inline CoinsCachePair* End() const noexcept { return &m_sentinel.unspent; }
 
     //! Return the next entry after current, possibly erasing current
     inline CoinsCachePair* NextAndMaybeErase(CoinsCachePair& current) noexcept
@@ -346,7 +370,7 @@ struct CoinsViewCacheCursor
     size_t GetTotalCount() const noexcept { return m_map.size(); }
 private:
     size_t& m_dirty_count;
-    CoinsCachePair& m_sentinel;
+    CoinsSentinel& m_sentinel;
     CCoinsMap& m_map;
     bool m_will_erase;
 };
@@ -446,13 +470,17 @@ protected:
     mutable uint256 m_block_hash;
     mutable CCoinsMapMemoryResource m_cache_coins_memory_resource{};
     /* The starting sentinel of the flagged entry circular doubly linked list. */
-    mutable CoinsCachePair m_sentinel;
+    mutable CoinsSentinel m_sentinel;
     mutable CCoinsMap cacheCoins;
 
     /* Cached dynamic memory usage for the inner Coin objects. */
     mutable size_t cachedCoinsUsage{0};
     /* Running count of dirty Coin cache entries. */
     mutable size_t m_dirty_count{0};
+
+    /* Running count of spent entries in cacheCoins (they are all on the spent list). */
+    mutable size_t m_spent_count{0};
+
 
     /**
      * Discard all modifications made to this cache without flushing to the base view.
@@ -590,6 +618,17 @@ private:
      * memory usage.
      */
     CCoinsMap::iterator FetchCoin(const COutPoint &outpoint) const;
+
+    //! Mark a map entry as a spent coin: DIRTY, linked on the spent list, and
+    //! counted in m_spent_count. The caller must already have accounted for the
+    //! entry's previous state (dirty/spent counts).
+    void SetSpent(CoinsCachePair& pair) {
+        CCoinsCacheEntry& ce{pair.second};
+        ce.SetClean();
+        CCoinsCacheEntry::SetDirty(pair, m_sentinel.spent);
+        ++m_dirty_count;
+        ++m_spent_count;
+    }
 };
 
 /**

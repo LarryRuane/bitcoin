@@ -241,8 +241,7 @@ void TestCoinsView(FuzzedDataProvider& fuzzed_data_provider, CCoinsViewCache& co
                 random_mutable_transaction = *opt_mutable_transaction;
             },
             [&] {
-                CoinsCachePair sentinel{};
-                sentinel.second.SelfRef(sentinel);
+                CoinsSentinel sentinel{};
                 size_t dirty_count{0};
                 CCoinsMapMemoryResource resource;
                 CCoinsMap coins_map{0, SaltedCoinsCacheHasher{/*deterministic=*/true}, CCoinsMap::key_equal{}, &resource};
@@ -262,8 +261,8 @@ void TestCoinsView(FuzzedDataProvider& fuzzed_data_provider, CCoinsViewCache& co
                     bool fresh{!coins_view_cache.PeekCoin(random_out_point) && fuzzed_data_provider.ConsumeBool()};
                     bool dirty{fresh || fuzzed_data_provider.ConsumeBool()};
                     auto it{coins_map.emplace(random_out_point, std::move(coins_cache_entry)).first};
-                    if (dirty) CCoinsCacheEntry::SetDirty(*it, sentinel);
-                    if (fresh) CCoinsCacheEntry::SetFresh(*it, sentinel);
+                    if (dirty) CCoinsCacheEntry::SetDirty(*it, sentinel.unspent);
+                    if (fresh) CCoinsCacheEntry::SetFresh(*it, sentinel.unspent);
                     dirty_count += dirty;
                 }
                 auto cursor{CoinsViewCacheCursor(dirty_count, sentinel, coins_map, /*will_erase=*/true)};
