@@ -274,6 +274,8 @@ using CCoinsMap = std::unordered_map<COutPoint,
                                      PoolAllocator<CoinsCachePair,
                                                    sizeof(CoinsCachePair) + sizeof(void*) * 4>>;
 
+// A sorted list of spent coins
+using CompactSpentsList = std::vector<COutPoint>;
 
 using CCoinsMapMemoryResource = CCoinsMap::allocator_type::ResourceType;
 
@@ -298,8 +300,8 @@ private:
 
 //! The sentinels of the two circular doubly-linked lists of flagged cache
 //! entries: unspent (DIRTY and/or FRESH) and spent (always DIRTY, never
-//! FRESH). Spent entries are kept on their own list so that they can be
-//! processed as a group without scanning the map. Grouped in one struct
+//! FRESH). Spent entries are kept on their own list so that CompactSpents()
+//! can migrate exactly them without scanning the map. Grouped in one struct
 //! because the two lists are always passed around together.
 struct CoinsSentinel {
     CoinsCachePair unspent;
@@ -405,7 +407,14 @@ public:
 
     //! Do a bulk modification (multiple Coin changes + BestBlock change).
     //! The passed cursor is used to iterate through the coins.
-    virtual void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) = 0;
+    //! The outpoints in spents are compacted spent coins that must be erased.
+    //!
+    //! The caller guarantees that no outpoint in spents also has a cursor
+    //! entry (see CCoinsViewCache::RemoveShadowedSpents()), so implementations
+    //! may apply the two in either order. This disjointness is also what makes
+    //! a partially persisted batch recoverable: every operation in the stream
+    //! is independently re-derivable by replaying blocks after a crash.
+    virtual void BatchWrite(CoinsViewCacheCursor& cursor, const CompactSpentsList& spents, const uint256& block_hash) = 0;
 
     //! Estimate database size
     virtual size_t EstimateSize() const = 0;
@@ -428,7 +437,7 @@ public:
     bool HaveCoin(const COutPoint& outpoint) const override { return !!GetCoin(outpoint); }
     uint256 GetBestBlock() const override { return {}; }
     std::vector<uint256> GetHeadBlocks() const override { return {}; }
-    void BatchWrite(CoinsViewCacheCursor& cursor, const uint256&) override
+    void BatchWrite(CoinsViewCacheCursor& cursor, const CompactSpentsList& spents, const uint256&) override
     {
         for (auto it{cursor.Begin()}; it != cursor.End(); it = cursor.NextAndMaybeErase(*it)) { }
     }
@@ -451,7 +460,7 @@ public:
     bool HaveCoin(const COutPoint& outpoint) const override { return base->HaveCoin(outpoint); }
     uint256 GetBestBlock() const override { return base->GetBestBlock(); }
     std::vector<uint256> GetHeadBlocks() const override { return base->GetHeadBlocks(); }
-    void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) override { base->BatchWrite(cursor, block_hash); }
+    void BatchWrite(CoinsViewCacheCursor& cursor, const CompactSpentsList& spents, const uint256& block_hash) override { base->BatchWrite(cursor, spents, block_hash); }
     size_t EstimateSize() const override { return base->EstimateSize(); }
 };
 
@@ -473,12 +482,25 @@ protected:
     mutable CoinsSentinel m_sentinel;
     mutable CCoinsMap cacheCoins;
 
+    //! Compacted spent coins: outpoints (only) of spent coins migrated out of
+    //! cacheCoins by CompactSpents(), held until the next Flush/Sync/Reset.
+    //! Always sorted (lookups binary-search it); a cacheCoins entry for the
+    //! same outpoint always represents newer state and shadows this vector.
+    mutable CompactSpentsList m_compact_spents;
+    // How many spent coins there must be to start compacting them. Zero (the
+    // default) means never compact spent coins. Set via SetCompactSpentsThreshold().
+    size_t m_compact_spents_threshold{0};
+    // When the number of cacheCoins spents reaches this value, then compact them.
+    // (Increases over time within a flush cycle; reset to m_compact_spents_threshold
+    // at each flush.)
+    size_t m_spents_limit{0};
+
     /* Cached dynamic memory usage for the inner Coin objects. */
     mutable size_t cachedCoinsUsage{0};
     /* Running count of dirty Coin cache entries. */
     mutable size_t m_dirty_count{0};
 
-    /* Running count of spent entries in cacheCoins (they are all on the spent list). */
+    /* Only counts entries in cacheCoins (and also the spent linked list), not m_compact_spents */
     mutable size_t m_spent_count{0};
 
 
@@ -494,6 +516,14 @@ protected:
 public:
     CCoinsViewCache(CCoinsView* in_base, bool deterministic = false);
 
+    //! Enable (threshold > 0) or disable (0, the default) compaction of spent
+    //! coins. The threshold is the number of spent map entries that triggers the
+    //! first compaction of a flush cycle; it should be derived from the cache
+    //! size (see Chainstate::InitCoinsCache()). If compaction has already run in
+    //! the current flush cycle, a new threshold takes full effect after the next
+    //! flush (but there should be no reason to change it).
+    void SetCompactSpentsThreshold(size_t threshold);
+
     /**
      * By deleting the copy constructor, we prevent accidentally using it when one intends to create a cache on top of a base cache.
      */
@@ -505,7 +535,7 @@ public:
     bool HaveCoin(const COutPoint& outpoint) const override;
     uint256 GetBestBlock() const override;
     void SetBestBlock(const uint256& block_hash);
-    void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) override;
+    void BatchWrite(CoinsViewCacheCursor& cursor, const CompactSpentsList& spents, const uint256& block_hash) override;
 
     /**
      * Check if we have the given utxo already loaded in this cache.
@@ -589,6 +619,44 @@ public:
     //!
     //! See: https://stackoverflow.com/questions/42114044/how-to-release-unordered-map-memory
     void ReallocateCache();
+
+    //! Whether the outpoint is a compacted spent coin (i.e. in m_compact_spents).
+    //! Callers must have already checked cacheCoins: a map entry shadows the vector.
+    bool IsCompactSpent(const COutPoint& outpoint) const {
+        return std::binary_search(m_compact_spents.begin(), m_compact_spents.end(), outpoint);
+    }
+
+    //! Migrate all spent cacheCoins entries into m_compact_spents (and rebuild
+    //! the filter). May invalidate iterators/references to spent map entries.
+    void CompactSpents();
+    //! Remove from m_compact_spents any entry shadowed by a cacheCoins entry.
+    //! Must be called before passing m_compact_spents to base->BatchWrite():
+    //! a shadowed entry records a spend that a later re-creation of the coin
+    //! superseded, so its erase is only correct if the cursor's write of the
+    //! same outpoint also reaches disk. Crash recovery cannot restore such a
+    //! coin: the spend that produced the stale entry may lie on an abandoned
+    //! chain that replaying blocks between the on-disk tip and the flushed
+    //! tip never visits. Dropping shadowed entries leaves only erases that
+    //! block replay independently re-derives, keeping any prefix of the
+    //! batch stream recoverable.
+    void RemoveShadowedSpents();
+    //! Reset the compact-spents state for a new flush cycle.
+    void ResetCompactSpents();
+    //! Compact spent coins if the threshold has been reached. Cheap when not
+    //! (kept in the header to inline the common case). May invalidate
+    //! iterators/references to spent map entries.
+    //!
+    //! Call sites invoke this whenever they may have created a spent map
+    //! entry, which bounds map-resident spents tightly at m_spents_limit and
+    //! keeps the compaction batch sizes deterministic. Calling less often
+    //! would be safe (CompactSpents() drains every spent entry whenever it
+    //! runs) at the cost of a looser bound.
+    void MaybeCompactSpents()
+    {
+        if (m_compact_spents_threshold > 0 && m_spent_count >= m_spents_limit) {
+            CompactSpents();
+        }
+    }
 
     //! Run an internal sanity check on the cache data structure. */
     void SanityCheck() const;

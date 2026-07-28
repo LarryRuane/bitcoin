@@ -13,10 +13,12 @@
 #include <serialize.h>
 #include <uint256.h>
 #include <util/byte_units.h>
+#include <util/check.h>
 #include <util/log.h>
 #include <util/threadnames.h>
 #include <util/vector.h>
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
@@ -119,7 +121,7 @@ std::vector<uint256> CCoinsViewDB::GetHeadBlocks() const {
     return vhashHeadBlocks;
 }
 
-void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash)
+void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const CompactSpentsList& spents, const uint256& block_hash)
 {
     CDBBatch batch(*m_db);
     size_t count = 0;
@@ -150,17 +152,7 @@ void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block
     batch.Erase(DB_BEST_BLOCK);
     batch.Write(DB_HEAD_BLOCKS, Vector(block_hash, old_tip));
 
-    for (auto it{cursor.Begin()}; it != cursor.End();) {
-        if (it->second.IsDirty()) {
-            CoinEntry entry(&it->first);
-            if (it->second.coin.IsSpent()) {
-                batch.Erase(entry);
-            } else {
-                batch.Write(entry, it->second.coin);
-            }
-        }
-        count++;
-        it = cursor.NextAndMaybeErase(*it);
+    auto try_write_batch{[this, &batch]() -> void {
         if (batch.ApproximateSize() > m_options.batch_write_bytes) {
             LogDebug(BCLog::COINDB, "Writing partial batch of %.2f MiB\n", batch.ApproximateSize() / double(1_MiB));
 
@@ -174,6 +166,33 @@ void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block
                 }
             }
         }
+    }};
+
+    // The caller guarantees no outpoint here also has a cursor entry (see
+    // CCoinsView::BatchWrite), so this loop's order relative to the cursor
+    // loop below is immaterial.
+    for (const COutPoint& outpoint : spents) {
+        CoinEntry entry(&outpoint);
+        batch.Erase(entry);
+        try_write_batch();
+    }
+
+    // Note that spent coins can exist in the cursor list too.
+    for (auto it{cursor.Begin()}; it != cursor.End();) {
+        if constexpr (G_ABORT_ON_FAILED_ASSUME) {
+            Assume(!std::binary_search(spents.begin(), spents.end(), it->first));
+        }
+        if (it->second.IsDirty()) {
+            CoinEntry entry(&it->first);
+            if (it->second.coin.IsSpent()) {
+                batch.Erase(entry);
+            } else {
+                batch.Write(entry, it->second.coin);
+            }
+        }
+        count++;
+        it = cursor.NextAndMaybeErase(*it);
+        try_write_batch();
     }
 
     // In the last batch, mark the database as consistent with block_hash again.

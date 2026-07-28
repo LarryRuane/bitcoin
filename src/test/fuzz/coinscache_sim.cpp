@@ -13,6 +13,7 @@
 #include <test/util/setup_common.h>
 #include <util/threadpool.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -167,9 +168,14 @@ public:
         return std::nullopt;
     }
 
-    void BatchWrite(CoinsViewCacheCursor& cursor, const uint256&) final
+    void BatchWrite(CoinsViewCacheCursor& cursor, const CompactSpentsList& spents, const uint256&) final
     {
+        for (const COutPoint& op : spents) {
+            m_data.erase(op);
+        }
         for (auto it{cursor.Begin()}; it != cursor.End(); it = cursor.NextAndMaybeErase(*it)) {
+            // No outpoint may be in both spents and the cursor (see CCoinsView::BatchWrite).
+            assert(!std::binary_search(spents.begin(), spents.end(), it->first));
             if (it->second.IsDirty()) {
                 if (it->second.coin.IsSpent()) {
                     m_data.erase(it->first);

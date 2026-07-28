@@ -17,6 +17,7 @@
 #include <util/check.h>
 #include <util/strencodings.h>
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <variant>
@@ -57,9 +58,18 @@ public:
 
     uint256 GetBestBlock() const override { return hashBestBlock_; }
 
-    void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) override
+    void BatchWrite(CoinsViewCacheCursor& cursor, const CompactSpentsList& spents, const uint256& block_hash) override
     {
+        for (const COutPoint& outpoint : spents) {
+            map_[outpoint] = Coin{};
+            if (m_rng.randrange(3) == 0) {
+                // Randomly delete empty entries on write.
+                map_.erase(outpoint);
+            }
+        }
         for (auto it{cursor.Begin()}; it != cursor.End(); it = cursor.NextAndMaybeErase(*it)){
+            // No outpoint may be in both spents and the cursor (see CCoinsView::BatchWrite).
+            assert(!std::binary_search(spents.begin(), spents.end(), it->first));
             if (it->second.IsDirty()) {
                 // Same optimization used in CCoinsViewDB is to only write dirty entries.
                 map_[it->first] = it->second.coin;
@@ -82,7 +92,7 @@ public:
     void SelfTest(bool sanity_check = true) const
     {
         // Manually recompute the dynamic usage of the whole data, and compare it.
-        size_t ret = memusage::DynamicUsage(cacheCoins);
+        size_t ret = memusage::DynamicUsage(cacheCoins) + memusage::DynamicUsage(m_compact_spents);
         size_t count = 0;
         for (const auto& entry : cacheCoins) {
             ret += entry.second.coin.DynamicMemoryUsage();
@@ -669,7 +679,8 @@ static void WriteCoinsViewEntry(CCoinsView& view, const MaybeCoin& cache_coin)
     if (cache_coin) InsertCoinsMapEntry(map, sentinel, *cache_coin);
     size_t dirty_count{cache_coin && cache_coin->IsDirty()};
     auto cursor{CoinsViewCacheCursor(dirty_count, sentinel, map, /*will_erase=*/true)};
-    view.BatchWrite(cursor, {});
+    CompactSpentsList spents;
+    view.BatchWrite(cursor, spents, {});
     BOOST_CHECK_EQUAL(dirty_count, 0U);
 }
 
