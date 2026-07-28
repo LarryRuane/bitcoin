@@ -46,6 +46,8 @@ shift-base:test/fuzz/crypto_diff_fuzz_chacha20.cpp
 # locally or in CI.
 unsigned-integer-overflow:arith_uint256.h
 unsigned-integer-overflow:CBloomFilter::Hash
+unsigned-integer-overflow:CompactSpentsFilter::Hash
+unsigned-integer-overflow:CompactSpentsFilter::Mix
 unsigned-integer-overflow:CRollingBloomFilter::insert
 unsigned-integer-overflow:RollingBloomHash
 unsigned-integer-overflow:CompressAmount

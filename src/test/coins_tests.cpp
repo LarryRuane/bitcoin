@@ -92,7 +92,7 @@ public:
     void SelfTest(bool sanity_check = true) const
     {
         // Manually recompute the dynamic usage of the whole data, and compare it.
-        size_t ret = memusage::DynamicUsage(cacheCoins) + memusage::DynamicUsage(m_compact_spents);
+        size_t ret = memusage::DynamicUsage(cacheCoins) + memusage::DynamicUsage(m_compact_spents) + m_spents_filter.DynamicMemoryUsage();
         size_t count = 0;
         for (const auto& entry : cacheCoins) {
             ret += entry.second.coin.DynamicMemoryUsage();
@@ -1213,6 +1213,48 @@ BOOST_AUTO_TEST_CASE(ccoins_reset_guard)
     cache.Flush();
     BOOST_CHECK_EQUAL(cache.GetDirtyCount(), 0U);
 }
+
+BOOST_AUTO_TEST_CASE(compact_spents_filter_basic)
+{
+    CompactSpentsFilter filter{/*deterministic=*/false};
+
+    // An empty filter contains nothing.
+    BOOST_CHECK(!filter.MayContain(COutPoint(Txid::FromUint256(m_rng.rand256()), 0)));
+
+    // Entry counts chosen to hit the sizing edges: 1 and 2 (the one-block
+    // minimum), 1024 (exactly 16 bits/entry after power-of-two rounding — the
+    // worst-case, highest-FP configuration), 1025 (just past the boundary,
+    // ~32 bits/entry — the best case), and a typical larger count.
+    for (const size_t num_entries : {1, 2, 1024, 1025, 10'000}) {
+        std::vector<COutPoint> entries;
+        entries.reserve(num_entries);
+        for (size_t i{0}; i < num_entries; ++i) {
+            entries.emplace_back(Txid::FromUint256(m_rng.rand256()), m_rng.randbits(2));
+        }
+        filter.Reset(entries.size());
+        for (const COutPoint& outpoint : entries) filter.Insert(outpoint);
+
+        // No false negatives: correctness of IsCompactSpent() depends on this.
+        for (const COutPoint& outpoint : entries) {
+            BOOST_CHECK(filter.MayContain(outpoint));
+        }
+
+        // The false positive rate for outpoints never inserted should be far
+        // below this generous 1% bound at every size (expected is well under
+        // 0.3% even in the worst-case 16 bits/entry configuration).
+        size_t false_positives{0};
+        constexpr size_t NUM_PROBES{20'000};
+        for (size_t i{0}; i < NUM_PROBES; ++i) {
+            false_positives += filter.MayContain(COutPoint(Txid::FromUint256(m_rng.rand256()), 0));
+        }
+        BOOST_CHECK_LT(false_positives, NUM_PROBES / 100);
+
+        // Reset(0) empties the filter again.
+        filter.Reset(0);
+        BOOST_CHECK(!filter.MayContain(entries[0]));
+    }
+}
+
 
 BOOST_AUTO_TEST_CASE(ccoins_peekcoin)
 {

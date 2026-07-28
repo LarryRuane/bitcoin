@@ -33,6 +33,12 @@ CoinsViewEmpty& CoinsViewEmpty::Get()
     return instance;
 }
 
+CompactSpentsFilter::CompactSpentsFilter(bool deterministic) :
+    m_k0{deterministic ? uint64_t{0x76b0a5e15e2c1bd9} : FastRandomContext().rand64()},
+    m_k1{deterministic ? uint64_t{0xd79f38f1bd264268} : FastRandomContext().rand64()}
+{
+}
+
 std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
 {
     if (auto it{cacheCoins.find(outpoint)}; it != cacheCoins.end()) {
@@ -50,12 +56,13 @@ std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
 
 CCoinsViewCache::CCoinsViewCache(CCoinsView* in_base, bool deterministic) :
     CCoinsViewBacked(in_base), m_deterministic(deterministic),
-    cacheCoins(0, SaltedCoinsCacheHasher{/*deterministic=*/deterministic}, CCoinsMap::key_equal{}, &m_cache_coins_memory_resource)
+    cacheCoins(0, SaltedCoinsCacheHasher{/*deterministic=*/deterministic}, CCoinsMap::key_equal{}, &m_cache_coins_memory_resource),
+    m_spents_filter(deterministic)
 {
 }
 
 size_t CCoinsViewCache::DynamicMemoryUsage() const {
-    return memusage::DynamicUsage(cacheCoins) + cachedCoinsUsage + memusage::DynamicUsage(m_compact_spents);
+    return memusage::DynamicUsage(cacheCoins) + cachedCoinsUsage + memusage::DynamicUsage(m_compact_spents) + m_spents_filter.DynamicMemoryUsage();
 }
 
 std::optional<Coin> CCoinsViewCache::FetchCoinFromBase(const COutPoint& outpoint) const
@@ -394,6 +401,7 @@ void CCoinsViewCache::ResetCompactSpents()
     // discarded.
     m_compact_spents.clear();
     m_compact_spents.shrink_to_fit();
+    m_spents_filter.Reset(0);
     m_spents_limit = m_compact_spents_threshold;
 }
 
@@ -418,6 +426,8 @@ void CCoinsViewCache::RemoveShadowedSpents()
     std::erase_if(m_compact_spents, [this](const COutPoint& outpoint) {
         return cacheCoins.contains(outpoint);
     });
+    // The filter is left as-is: it may now overapprove removed outpoints,
+    // which only costs false positives, never false negatives.
 }
 
 void CCoinsViewCache::Flush(bool reallocate_cache)
@@ -560,6 +570,17 @@ void CCoinsViewCache::CompactSpents()
                new_spents.begin(), new_spents.end(),
                std::back_inserter(spents));
     m_compact_spents = std::move(spents);
+    // Rebuild the bloom filter to match the new vector contents. This is the
+    // only place the vector gains entries, so an insertion pass here keeps the
+    // filter's no-false-negative guarantee without any incremental maintenance.
+    m_spents_filter.Reset(m_compact_spents.size());
+    for (const COutPoint& outpoint : m_compact_spents) {
+        m_spents_filter.Insert(outpoint);
+    }
+    // Cheap always-on check: the filter and vector must be in lockstep (a
+    // desync in the other direction, a false negative, is caught per-lookup in
+    // debug builds and exhaustively by SanityCheck()).
+    Assume(m_compact_spents.empty() == m_spents_filter.Empty());
     // Geometric growth (20% of the vector size) keeps the total merge work per
     // flush cycle linear in the final vector size (a fixed batch size would be
     // quadratic). The cap bounds how much map-resident spent bloat (~128 bytes
@@ -624,6 +645,10 @@ void CCoinsViewCache::SanityCheck() const
     // The vector of compacted spent coins must be sorted.
     for (size_t i{1}; i < m_compact_spents.size(); ++i) {
         assert(!(m_compact_spents[i] < m_compact_spents[i - 1]));
+    }
+    // the bloom filter must have no false negatives for the vector's contents
+    for (const COutPoint& outpoint : m_compact_spents) {
+        assert(m_spents_filter.MayContain(outpoint));
     }
 }
 

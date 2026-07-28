@@ -7,6 +7,7 @@
 #define BITCOIN_COINS_H
 
 #include <attributes.h>
+#include <coinsfilter.h>
 #include <compressor.h>
 #include <core_memusage.h>
 #include <crypto/siphash.h>
@@ -274,9 +275,6 @@ using CCoinsMap = std::unordered_map<COutPoint,
                                      PoolAllocator<CoinsCachePair,
                                                    sizeof(CoinsCachePair) + sizeof(void*) * 4>>;
 
-// A sorted list of spent coins
-using CompactSpentsList = std::vector<COutPoint>;
-
 using CCoinsMapMemoryResource = CCoinsMap::allocator_type::ResourceType;
 
 /** Cursor for iterating over CoinsView state */
@@ -495,6 +493,11 @@ protected:
     // at each flush.)
     size_t m_spents_limit{0};
 
+    // Bloom filter answering most (negative) m_compact_spents lookups with a
+    // single cache-line probe; must always describe m_compact_spents exactly
+    // (rebuilt in CompactSpents(), cleared in ResetCompactSpents()).
+    mutable CompactSpentsFilter m_spents_filter;
+
     /* Cached dynamic memory usage for the inner Coin objects. */
     mutable size_t cachedCoinsUsage{0};
     /* Running count of dirty Coin cache entries. */
@@ -623,6 +626,17 @@ public:
     //! Whether the outpoint is a compacted spent coin (i.e. in m_compact_spents).
     //! Callers must have already checked cacheCoins: a map entry shadows the vector.
     bool IsCompactSpent(const COutPoint& outpoint) const {
+        // The filter cheaply resolves the common case (not a compacted spent,
+        // including the empty-vector case); the binary search confirms the rest.
+        if (!m_spents_filter.MayContain(outpoint)) {
+            if constexpr (G_ABORT_ON_FAILED_ASSUME) {
+                // Debug builds only (compiles to nothing in release, where it
+                // would negate the filter's benefit): verify the filter's
+                // no-false-negative guarantee, on which correctness depends.
+                Assume(!std::binary_search(m_compact_spents.begin(), m_compact_spents.end(), outpoint));
+            }
+            return false;
+        }
         return std::binary_search(m_compact_spents.begin(), m_compact_spents.end(), outpoint);
     }
 
