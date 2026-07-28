@@ -1235,8 +1235,10 @@ BOOST_AUTO_TEST_CASE(compact_spents_filter_basic)
         for (const COutPoint& outpoint : entries) filter.Insert(outpoint);
 
         // No false negatives: correctness of IsCompactSpent() depends on this.
+        // (REQUIRE, not CHECK: one failure in these loops means thousands
+        // more; stop at the first, which is also where a debugger halts.)
         for (const COutPoint& outpoint : entries) {
-            BOOST_CHECK(filter.MayContain(outpoint));
+            BOOST_REQUIRE(filter.MayContain(outpoint));
         }
 
         // The false positive rate for outpoints never inserted should be far
@@ -1255,6 +1257,75 @@ BOOST_AUTO_TEST_CASE(compact_spents_filter_basic)
     }
 }
 
+// End-to-end: spent coins compacted into m_compact_spents must be reported as
+// nonexistent by every lookup path, even though the base still has them; this
+// exercises CompactSpents() (merge + filter rebuild) and IsCompactSpent().
+BOOST_AUTO_TEST_CASE(compact_spents_lookup)
+{
+    CCoinsViewCacheTest base{&CoinsViewEmpty::Get()};
+    std::vector<COutPoint> outpoints;
+    for (int i{0}; i < 100; ++i) {
+        COutPoint outpoint{Txid::FromUint256(m_rng.rand256()), 0};
+        base.AddCoin(outpoint, Coin{CTxOut{i + 1, CScript{}}, 1, false}, false);
+        outpoints.push_back(outpoint);
+    }
+    // Compact aggressively: every spend immediately moves to the vector, so
+    // each iteration below performs a merge and a filter rebuild.
+    CCoinsViewCache cache{&base};
+    cache.SetCompactSpentsThreshold(1);
+    for (const COutPoint& outpoint : outpoints) {
+        BOOST_REQUIRE(cache.SpendCoin(outpoint));
+    }
+    cache.SanityCheck();
+    for (const COutPoint& outpoint : outpoints) {
+        BOOST_REQUIRE(!cache.HaveCoin(outpoint));
+        BOOST_REQUIRE(!cache.GetCoin(outpoint));
+        BOOST_REQUIRE(!cache.PeekCoin(outpoint));
+        BOOST_REQUIRE(base.PeekCoin(outpoint)); // base unaware until Flush
+    }
+    cache.Flush();
+    for (const COutPoint& outpoint : outpoints) {
+        BOOST_REQUIRE(!base.PeekCoin(outpoint));
+        BOOST_REQUIRE(!cache.HaveCoin(outpoint));
+    }
+}
+
+//! Records the spents list handed to BatchWrite before forwarding it.
+struct SpentsRecordingView : public CCoinsViewBacked {
+    using CCoinsViewBacked::CCoinsViewBacked;
+    CompactSpentsList recorded;
+    void BatchWrite(CoinsViewCacheCursor& cursor, const CompactSpentsList& spents, const uint256& block_hash) override
+    {
+        recorded = spents;
+        CCoinsViewBacked::BatchWrite(cursor, spents, block_hash);
+    }
+};
+
+// A compacted spend whose coin is later re-created must not reach the base
+// view's spents list: its erase is only correct if the re-creating write also
+// lands, and a crash between LevelDB batches can persist one without the
+// other. RemoveShadowedSpents() drops such entries before BatchWrite.
+BOOST_AUTO_TEST_CASE(compact_spents_shadowed_purged)
+{
+    CCoinsViewCacheTest base{&CoinsViewEmpty::Get()};
+    const COutPoint recreated{Txid::FromUint256(m_rng.rand256()), 0};
+    const COutPoint spent{Txid::FromUint256(m_rng.rand256()), 0};
+    base.AddCoin(recreated, Coin{CTxOut{1, CScript{}}, 1, false}, false);
+    base.AddCoin(spent, Coin{CTxOut{2, CScript{}}, 1, false}, false);
+
+    SpentsRecordingView recorder{&base};
+    CCoinsViewCache cache{&recorder};
+    cache.SetCompactSpentsThreshold(1);
+    BOOST_CHECK(cache.SpendCoin(recreated));
+    BOOST_CHECK(cache.SpendCoin(spent));
+    cache.AddCoin(recreated, Coin{CTxOut{3, CScript{}}, 2, false}, false);
+    cache.Flush();
+
+    BOOST_CHECK(std::find(recorder.recorded.begin(), recorder.recorded.end(), spent) != recorder.recorded.end());
+    BOOST_CHECK(std::find(recorder.recorded.begin(), recorder.recorded.end(), recreated) == recorder.recorded.end());
+    BOOST_CHECK(base.HaveCoin(recreated));
+    BOOST_CHECK(!base.HaveCoin(spent));
+}
 
 BOOST_AUTO_TEST_CASE(ccoins_peekcoin)
 {

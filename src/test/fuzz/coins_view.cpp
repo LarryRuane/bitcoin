@@ -407,6 +407,7 @@ FUZZ_TARGET(coins_view, .init = initialize_coins_view)
 {
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     CCoinsViewCache coins_view_cache{&CoinsViewEmpty::Get(), /*deterministic=*/true};
+    coins_view_cache.SetCompactSpentsThreshold(1);
     TestCoinsView(fuzzed_data_provider, coins_view_cache, &CoinsViewEmpty::Get());
 }
 
@@ -420,6 +421,7 @@ FUZZ_TARGET(coins_view_db, .init = initialize_coins_view)
     };
     CCoinsViewDB backend_coins_view{std::move(db_params), CoinsViewOptions{}};
     CCoinsViewCache coins_view_cache{&backend_coins_view, /*deterministic=*/true};
+    coins_view_cache.SetCompactSpentsThreshold(1);
     TestCoinsView(fuzzed_data_provider, coins_view_cache, &backend_coins_view);
 }
 
@@ -433,7 +435,11 @@ FUZZ_TARGET(coins_view_overlay, .init = initialize_coins_view)
     StartPoolIfNeeded();
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     MutationGuardCoinsViewCache backend_cache{&CoinsViewEmpty::Get(), /*deterministic=*/true};
+    // Compaction on the backend happens entirely inside BatchWrite, which the
+    // mutation guard permits; the overlay compacts during normal operation.
+    backend_cache.SetCompactSpentsThreshold(1);
     CoinsViewOverlay coins_view_cache{&backend_cache, g_thread_pool, /*deterministic=*/true};
+    coins_view_cache.SetCompactSpentsThreshold(1);
     CBlock block{BuildRandomBlock(fuzzed_data_provider, backend_cache)};
     const auto reset_guard{coins_view_cache.StartFetching(block)};
     TestCoinsView(fuzzed_data_provider, coins_view_cache, &backend_cache);
