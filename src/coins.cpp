@@ -12,6 +12,7 @@
 #include <util/threadpool.h>
 #include <util/trace.h>
 
+#include <algorithm>
 #include <ranges>
 #include <unordered_set>
 
@@ -37,6 +38,13 @@ std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
     if (auto it{cacheCoins.find(outpoint)}; it != cacheCoins.end()) {
         return it->second.coin.IsSpent() ? std::nullopt : std::optional{it->second.coin};
     }
+    // Not in the map. If this outpoint was spent and compacted, the base view
+    // still holds the coin's stale unspent version (the erase reaches the base
+    // only at the next flush); it must not be returned as a live coin. If the
+    // spent coin hasn't yet been compacted, it will be found in cacheCoins above.
+    if (IsCompactSpent(outpoint)) {
+        return std::nullopt;
+    }
     return base->PeekCoin(outpoint);
 }
 
@@ -47,7 +55,7 @@ CCoinsViewCache::CCoinsViewCache(CCoinsView* in_base, bool deterministic) :
 }
 
 size_t CCoinsViewCache::DynamicMemoryUsage() const {
-    return memusage::DynamicUsage(cacheCoins) + cachedCoinsUsage;
+    return memusage::DynamicUsage(cacheCoins) + cachedCoinsUsage + memusage::DynamicUsage(m_compact_spents);
 }
 
 std::optional<Coin> CCoinsViewCache::FetchCoinFromBase(const COutPoint& outpoint) const
@@ -58,6 +66,13 @@ std::optional<Coin> CCoinsViewCache::FetchCoinFromBase(const COutPoint& outpoint
 CCoinsMap::iterator CCoinsViewCache::FetchCoin(const COutPoint &outpoint) const {
     const auto [ret, inserted] = cacheCoins.try_emplace(outpoint);
     if (inserted) {
+        // If this outpoint was spent and compacted, the base view still holds
+        // the coin's stale unspent version (the erase reaches the base only at
+        // the next flush); it must not be fetched into the cache as live.
+        if (IsCompactSpent(outpoint)) {
+            cacheCoins.erase(ret);
+            return cacheCoins.end();
+        }
         if (auto coin{FetchCoinFromBase(outpoint)}) {
             ret->second.coin = std::move(*coin);
             cachedCoinsUsage += ret->second.coin.DynamicMemoryUsage();
@@ -99,8 +114,12 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
         // re-added when it is also added in a newly connected block).
         //
         // If the coin doesn't exist in the current cache, or is spent but not
-        // DIRTY, then it can be marked FRESH.
-        fresh = !it->second.IsDirty();
+        // DIRTY, then it can be marked FRESH. A compacted spent is unflushed
+        // spentness in a third form: the coin exists in the base view with an
+        // erase pending in m_compact_spents, so re-adding it must likewise
+        // not be FRESH (RemoveShadowedSpents() will drop the stale erase, and
+        // this entry must then flush as a write, or as an erase if re-spent).
+        fresh = !it->second.IsDirty() && !IsCompactSpent(outpoint);
     }
     if (!inserted) {
         Assume(TrySub(m_dirty_count, it->second.IsDirty()));
@@ -135,6 +154,7 @@ void CCoinsViewCache::EmplaceCoinInternalDANGER(const COutPoint& outpoint, Coin&
     if (inserted) {
         if (it->second.coin.IsSpent()) {
             SetSpent(*it);
+            MaybeCompactSpents();
         } else {
             CCoinsCacheEntry::SetDirty(*it, m_sentinel.unspent);
             ++m_dirty_count;
@@ -174,6 +194,7 @@ bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout) {
     } else {
         it->second.coin.Clear();
         SetSpent(*it);
+        MaybeCompactSpents();
     }
     return true;
 }
@@ -237,9 +258,42 @@ void CCoinsCacheEntry::Merge(CoinsCachePair* source, CoinsCachePair* dest) noexc
     }
 }
 
-void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in_block_hash)
+void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const CompactSpentsList& spents, const uint256& in_block_hash)
 {
+    // Apply the child's compacted spents. The child guarantees no outpoint
+    // here also has a cursor entry (see CCoinsView::BatchWrite), so the order
+    // relative to the cursor loop below is immaterial. In production the child
+    // never has compaction enabled, so this list is empty; tests exercise it.
+    // The logic is a simplified version of the cursor loop: the incoming state
+    // is known to be a spent coin. The list may contain duplicates (a coin
+    // spent, re-created, and re-spent within one epoch); this loop is
+    // idempotent per outpoint.
+    for (const COutPoint& outpoint : spents) {
+        auto [itUs, inserted]{cacheCoins.try_emplace(outpoint)};
+        if (inserted) {
+            // The default constructor makes a spent coin, so no need to do that here
+            SetSpent(*itUs);
+        } else {
+            Assume(TrySub(cachedCoinsUsage, itUs->second.coin.DynamicMemoryUsage()));
+            Assume(TrySub(m_dirty_count, itUs->second.IsDirty()));
+            Assume(TrySub(m_spent_count, itUs->second.coin.IsSpent() && itUs->second.IsDirty()));
+            if (itUs->second.IsFresh()) {
+                // The grandparent cache does not have an entry, and the coin
+                // has been spent. We can just delete it from the parent cache.
+                cacheCoins.erase(itUs);
+            } else {
+                itUs->second.coin.Clear(); // mark as spent
+                itUs->second.SetClean();
+                SetSpent(*itUs);
+            }
+        }
+        MaybeCompactSpents();
+    }
+
     for (auto it{cursor.Begin()}; it != cursor.End(); it = cursor.NextAndMaybeErase(*it)) {
+        if constexpr (G_ABORT_ON_FAILED_ASSUME) {
+            Assume(!std::binary_search(spents.begin(), spents.end(), it->first));
+        }
         if (!it->second.IsDirty()) { // TODO a cursor can only contain dirty entries
             continue;
         }
@@ -267,8 +321,11 @@ void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in
                 }
                 // We can mark it FRESH in the parent if it was FRESH in the child
                 // Otherwise it might have just been flushed from the parent's cache
-                // and already exist in the grandparent
-                if (it->second.IsFresh()) {
+                // and already exist in the grandparent. The coin also must not be
+                // in this cache's compact spents: absent from the map, it can
+                // still exist in the base with an erase pending, which FRESH
+                // would wrongly cancel (same reasoning as in AddCoin()).
+                if (it->second.IsFresh() && !IsCompactSpent(it->first)) {
                     Assume(!itUs->second.coin.IsSpent()); // spent coins are never FRESH
                     CCoinsCacheEntry::SetFresh(*itUs, m_sentinel.unspent);
                 }
@@ -323,17 +380,54 @@ void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in
                 // from being flushed to the grandparent.
             }
         }
+        MaybeCompactSpents();
     }
     SetBestBlock(in_block_hash);
 }
 
+void CCoinsViewCache::ResetCompactSpents()
+{
+    m_spent_count = 0;
+    // Note: no reserve() on m_compact_spents here; CompactSpents() builds each
+    // merged vector with an exact reserve and move-assigns it, so any capacity
+    // reserved here would be held (unused) until the first compaction and then
+    // discarded.
+    m_compact_spents.clear();
+    m_compact_spents.shrink_to_fit();
+    m_spents_limit = m_compact_spents_threshold;
+}
+
+void CCoinsViewCache::SetCompactSpentsThreshold(size_t threshold)
+{
+    m_compact_spents_threshold = threshold;
+    // m_spents_limit has two regimes within a flush cycle: before the first
+    // compaction (vector empty) it equals the configured threshold; after one
+    // (vector non-empty) it follows the geometric schedule derived from the
+    // vector's size (see CompactSpents()). Update it here only in the first
+    // regime — an in-flight schedule is left undisturbed, and the new
+    // threshold takes full effect when the next flush resets the cycle.
+    if (m_compact_spents.empty()) {
+        m_spents_limit = threshold;
+    }
+    // A lowered threshold may already be met by the current spent count;
+    // compact immediately so the equality invariant in CompactSpents() holds.
+    MaybeCompactSpents();
+}
+void CCoinsViewCache::RemoveShadowedSpents()
+{
+    std::erase_if(m_compact_spents, [this](const COutPoint& outpoint) {
+        return cacheCoins.contains(outpoint);
+    });
+}
+
 void CCoinsViewCache::Flush(bool reallocate_cache)
 {
+    RemoveShadowedSpents();
     auto cursor{CoinsViewCacheCursor(m_dirty_count, m_sentinel, cacheCoins, /*will_erase=*/true)};
-    base->BatchWrite(cursor, m_block_hash);
+    base->BatchWrite(cursor, m_compact_spents, m_block_hash);
     Assume(m_dirty_count == 0);
     cacheCoins.clear();
-    m_spent_count = 0;
+    ResetCompactSpents();
     if (reallocate_cache) {
         ReallocateCache();
     }
@@ -342,15 +436,16 @@ void CCoinsViewCache::Flush(bool reallocate_cache)
 
 void CCoinsViewCache::Sync()
 {
+    RemoveShadowedSpents();
     auto cursor{CoinsViewCacheCursor(m_dirty_count, m_sentinel, cacheCoins, /*will_erase=*/false)};
-    base->BatchWrite(cursor, m_block_hash);
+    base->BatchWrite(cursor, m_compact_spents, m_block_hash);
     Assume(m_dirty_count == 0);
     if (m_sentinel.unspent.second.Next() != &m_sentinel.unspent ||
         m_sentinel.spent.second.Next() != &m_sentinel.spent) {
         /* BatchWrite must clear flags of all entries */
         throw std::logic_error("Not all flagged entries were cleared");
     }
-    m_spent_count = 0;
+    ResetCompactSpents();
 }
 
 void CCoinsViewCache::Reset() noexcept
@@ -358,7 +453,7 @@ void CCoinsViewCache::Reset() noexcept
     cacheCoins.clear();
     cachedCoinsUsage = 0;
     m_dirty_count = 0;
-    m_spent_count = 0;
+    ResetCompactSpents();
     SetBestBlock(uint256::ZERO);
 }
 
@@ -366,7 +461,8 @@ void CCoinsViewCache::Uncache(const COutPoint& hash)
 {
     CCoinsMap::iterator it = cacheCoins.find(hash);
     if (it != cacheCoins.end() && !it->second.IsDirty()) {
-        // Spent map entries are always DIRTY, so only unspent coins can be uncached.
+        // Spent map entries are always DIRTY, so only unspent coins can be
+        // uncached (compacted spents couldn't be removed from the vector anyway).
         Assume(!it->second.coin.IsSpent());
         Assume(TrySub(cachedCoinsUsage, it->second.coin.DynamicMemoryUsage()));
         TRACEPOINT(utxocache, uncache,
@@ -380,7 +476,7 @@ void CCoinsViewCache::Uncache(const COutPoint& hash)
 }
 
 unsigned int CCoinsViewCache::GetCacheSize() const {
-    return cacheCoins.size();
+    return cacheCoins.size() + m_compact_spents.size();
 }
 
 bool CCoinsViewCache::HaveInputs(const CTransaction& tx) const
@@ -403,6 +499,76 @@ void CCoinsViewCache::ReallocateCache()
     m_cache_coins_memory_resource.~CCoinsMapMemoryResource();
     ::new (&m_cache_coins_memory_resource) CCoinsMapMemoryResource{};
     ::new (&cacheCoins) CCoinsMap{0, SaltedCoinsCacheHasher{/*deterministic=*/m_deterministic}, CCoinsMap::key_equal{}, &m_cache_coins_memory_resource};
+}
+
+// Migrate all spent cacheCoins entries into the sorted m_compact_spents
+// vector. This is the core memory optimization: a spent map entry occupies a
+// ~128-byte pool node (36-byte key + 80-byte entry + node overhead) while a
+// vector element is the 36-byte outpoint alone — roughly a 3.5x reduction,
+// enlarging the cache's effective capacity.
+//
+// The spent entries are found via their dedicated linked list (the reason the
+// sentinel is split into spent/unspent lists), appended to a new exactly-sized
+// vector, sorted, and merged (both inputs sorted, so a single linear pass)
+// with the existing vector; the filter is then rebuilt for the merged result.
+// The vector therefore never grows in place — growth and sort/merge are the
+// same operation — and because the batch-size ladder is deterministic
+// (threshold, then +20% steps), every flush cycle requests the identical
+// sequence of allocation sizes, which the allocator can reuse.
+//
+// Note: the merge transiently holds old + new vectors (~2x the final size).
+// This is accepted, like the map bucket array's growth spike: the budget
+// governs persistent usage. Erases entries from cacheCoins, so iterators and
+// references to spent map entries are invalidated.
+void CCoinsViewCache::CompactSpents()
+{
+    assert(m_compact_spents_threshold > 0);
+    assert(m_spent_count > 0);
+    // The per-creation MaybeCompactSpents() discipline means compaction always
+    // fires at exactly the limit; inequality means a call site was missed
+    // (safe, but it breaks the deterministic batch-size ladder).
+    Assume(m_spent_count == m_spents_limit);
+    // Approximate net gain per compacted coin: its map node is freed (the pair
+    // plus the hash node's link pointer; the hash value is not stored because
+    // the salted hasher is noexcept — 128 bytes on libstdc++/x86-64, verified
+    // against the pool allocator's actual request size), while a
+    // sizeof(COutPoint) vector element is added. Ignored as unfreed/small: the
+    // map's bucket array (not shrunk by compaction) and the bloom filter's
+    // 2-4 bytes/entry (grows in power-of-two jumps). The freed map nodes
+    // return to the pool's freelist, not to the OS, so the reported cache size
+    // plateaus after this event until new coins consume the freelist.
+    constexpr size_t approx_node_size{sizeof(memusage::unordered_node<CoinsCachePair>)};
+    LogDebug(BCLog::COINDB, "CompactSpents compacting: %d existing: %d freed: %dMiB\n",
+             m_spent_count, m_compact_spents.size(),
+             m_spent_count * (approx_node_size - sizeof(COutPoint)) / (1 << 20));
+    CompactSpentsList new_spents;
+    new_spents.reserve(m_spent_count);
+    m_spent_count = 0;
+    CoinsCachePair* next_spent;
+    for (CoinsCachePair* pair = m_sentinel.spent.second.Next(); pair != &m_sentinel.spent; pair = next_spent) {
+        next_spent = pair->second.Next();
+        assert(pair->second.IsDirty());
+        Assume(TrySub(m_dirty_count, pair->second.IsDirty()));
+        assert(new_spents.size() < new_spents.capacity());
+        new_spents.push_back(pair->first);
+        cacheCoins.erase(pair->first);
+    }
+    std::sort(new_spents.begin(), new_spents.end());
+    CompactSpentsList spents;
+    spents.reserve(m_compact_spents.size() + new_spents.size());
+    std::merge(m_compact_spents.begin(), m_compact_spents.end(),
+               new_spents.begin(), new_spents.end(),
+               std::back_inserter(spents));
+    m_compact_spents = std::move(spents);
+    // Geometric growth (20% of the vector size) keeps the total merge work per
+    // flush cycle linear in the final vector size (a fixed batch size would be
+    // quadratic). The cap bounds how much map-resident spent bloat (~128 bytes
+    // per entry) can accumulate late in a cycle to the same level the initial
+    // threshold already deems acceptable (~1/8 of the cache), at the cost of a
+    // few extra sub-second merges.
+    m_spents_limit = std::min(m_compact_spents.size() * 20 / 100, m_compact_spents_threshold);
+    // Tests can enable compaction with a threshold as small as 1; always make progress.
+    if (m_spents_limit == 0) m_spents_limit = 1;
 }
 
 void CCoinsViewCache::SanityCheck() const
@@ -455,6 +621,10 @@ void CCoinsViewCache::SanityCheck() const
     assert(count_spent == count_linked_spent);
     assert(count_spent == m_spent_count);
     assert(recomputed_usage == cachedCoinsUsage);
+    // The vector of compacted spent coins must be sorted.
+    for (size_t i{1}; i < m_compact_spents.size(); ++i) {
+        assert(!(m_compact_spents[i] < m_compact_spents[i - 1]));
+    }
 }
 
 CCoinsViewCache::ResetGuard CoinsViewOverlay::StartFetching(const CBlock& block LIFETIMEBOUND) noexcept
