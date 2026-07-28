@@ -1872,6 +1872,23 @@ void CoinsViews::InitCache(int32_t prevoutfetch_threads)
     m_connect_block_view = std::make_unique<CoinsViewOverlay>(&*m_cacheview, std::move(thread_pool));
 }
 
+//! Derive the spent-coin compaction threshold from the coinstip cache size:
+//! begin compacting once spent map entries would otherwise occupy roughly
+//! 1/SPENT_BUDGET_FRACTION of the cache. For dbcache=1000 (MiB) this is ~1M
+//! entries, which benchmarked well; it scales down proportionally for
+//! memory-constrained nodes so that compaction still activates well before
+//! the cache fills.
+static size_t CompactSpentsThreshold(size_t coinstip_cache_size_bytes)
+{
+    //! Empirical policy knob: how much of the cache spent map entries may
+    //! occupy before they are compacted.
+    constexpr size_t SPENT_BUDGET_FRACTION{8};
+    //! Approximate in-map footprint of one (spent) coin: the map node (pair
+    //! plus hash-node pointer; ~128 bytes on typical platforms).
+    constexpr size_t approx_node_size{sizeof(memusage::unordered_node<CoinsCachePair>)};
+    return coinstip_cache_size_bytes / SPENT_BUDGET_FRACTION / approx_node_size;
+}
+
 Chainstate::Chainstate(
     CTxMemPool* mempool,
     BlockManager& blockman,
@@ -1946,6 +1963,7 @@ void Chainstate::InitCoinsCache(size_t cache_size_bytes)
     assert(m_coins_views != nullptr);
     m_coinstip_cache_size_bytes = cache_size_bytes;
     m_coins_views->InitCache(m_chainman.m_options.prevoutfetch_threads_num);
+    CoinsTip().SetCompactSpentsThreshold(CompactSpentsThreshold(cache_size_bytes));
 }
 
 // Lock-free: depends on `m_cached_is_ibd`, which is latched by `UpdateIBDStatus()`.
@@ -2824,6 +2842,13 @@ bool Chainstate::FlushStateToDisk(
                 // Flush the chainstate (which may refer to block index entries).
                 empty_cache ? CoinsTip().Flush() : CoinsTip().Sync();
                 m_last_flushed_block = m_blockman.LookupBlockIndex(CoinsTip().GetBestBlock());
+                if constexpr (G_ABORT_ON_FAILED_ASSUME) {
+                    // Debug builds: full consistency audit of the coins cache at
+                    // flush boundaries. Placed here (not in coins.cpp) so unit
+                    // tests that deliberately construct impossible cache states
+                    // never reach it.
+                    CoinsTip().SanityCheck();
+                }
                 full_flush_completed = true;
                 TRACEPOINT(utxocache, flush,
                     int64_t{Ticks<std::chrono::microseconds>(NodeClock::now() - nNow)},
@@ -5493,6 +5518,7 @@ bool Chainstate::ResizeCoinsCaches(size_t coinstip_size, size_t coinsdb_size)
     size_t old_coinstip_size = m_coinstip_cache_size_bytes;
     m_coinstip_cache_size_bytes = coinstip_size;
     m_coinsdb_cache_size_bytes = coinsdb_size;
+    CoinsTip().SetCompactSpentsThreshold(CompactSpentsThreshold(coinstip_size));
     CoinsDB().ResizeCache(coinsdb_size);
 
     LogInfo("[%s] resized coinsdb cache to %.1f MiB",

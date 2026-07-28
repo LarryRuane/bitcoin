@@ -522,8 +522,17 @@ constexpr int64_t LargeCoinsCacheThreshold(int64_t total_space) noexcept
 {
     // No periodic flush needed if at least this much space is free
     constexpr int64_t MAX_BLOCK_COINSDB_USAGE_BYTES{int64_t(10_MiB)};
-    return std::max((total_space * 9) / 10,
-                    total_space - MAX_BLOCK_COINSDB_USAGE_BYTES);
+    // The fixed 10 MiB headroom assumes cache usage grows smoothly with each
+    // block. Compacting spent coins steps the measured usage by up to 36 bytes
+    // per compacted entry in a single block — bounded by the compaction
+    // threshold (~1/1024th of the cache in entries, so ~3.5% of the cache in
+    // bytes; see CompactSpentsThreshold()). Cap the trigger at 95% so the
+    // headroom scales with the cache and always covers that step plus one
+    // block's organic growth. (For caches below ~200 MiB the pre-existing
+    // terms already provide at least this much headroom.)
+    return std::min((total_space * 95) / 100,
+                    std::max((total_space * 9) / 10,
+                             total_space - MAX_BLOCK_COINSDB_USAGE_BYTES));
 }
 
 //! Chainstate assumeutxo validity.
